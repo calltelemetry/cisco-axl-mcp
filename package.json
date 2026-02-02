@@ -1,0 +1,60 @@
+{
+  "name": "@calltelemetry/cisco-axl-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": "build/index.js",
+  "files": [
+    "build/**/*"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "generate:types": "tsx scripts/generate-types.ts",
+    "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
+    "build": "yarn generate:types && vite build && chmod +x build/index.js",
+    "start": "node build/index.js",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ test/ scripts/",
+    "lint:fix": "eslint src/ test/ scripts/ --fix",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'scripts/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'scripts/**/*.ts'",
+    "test": "vitest run",
+    "test:mcp": "vitest run test/mcp-conformance.test.ts",
+    "validate": "yarn typecheck && yarn lint --max-warnings=50 && yarn test",
+    "prepack": "yarn build && yarn test:mcp"
+  },
+  "keywords": [
+    "mcp",
+    "cisco",
+    "cucm",
+    "axl",
+    "soap"
+  ],
+  "author": "CallTelemetry",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@types/node": "^25.0.9",
+    "cisco-axl": "^1.4.1",
+    "dotenv": "^17.2.3",
+    "strong-soap": "^4.1.5",
+    "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@vitest/coverage-v8": "^4.0.17",
+    "eslint": "^9.28.0",
+    "prettier": "^3.5.3",
+    "tsx": "^4.20.6",
+    "typescript-eslint": "^8.34.0",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.17"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

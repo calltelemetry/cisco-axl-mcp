@@ -1,20 +1,22 @@
 {
   "name": "@calltelemetry/cisco-axl-mcp",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
   "type": "module",
   "main": "build/index.js",
-  "bin": "build/index.js",
+  "bin": {
+    "cisco-axl-mcp": "build/index.js"
+  },
   "files": [
     "build/**/*"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "scripts": {
     "generate:types": "tsx scripts/generate-types.ts",
     "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
-    "build": "yarn generate:types && vite build && chmod +x build/index.js",
+    "build": "vite build && chmod +x build/index.js",
     "start": "node build/index.js",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit",
@@ -35,7 +37,7 @@
     "soap"
   ],
   "author": "CallTelemetry",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@types/node": "^25.0.9",

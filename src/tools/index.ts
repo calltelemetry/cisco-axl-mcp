@@ -12,6 +12,10 @@ import {
   AXL_TOP_LEVEL_OBJECTS,
   type AxlTopLevelObject,
 } from '../types/generated/axl-objects';
+import {
+  AXL_OPERATION_SCHEMAS,
+  AXL_SCHEMAS_SOURCE_VERSION,
+} from '../types/generated/axl-operation-schemas';
 import type { ExecuteOperationOptions } from '../lib/axl-client';
 
 const OPERATION_TO_OBJECT = (() => {
@@ -23,6 +27,27 @@ const OPERATION_TO_OBJECT = (() => {
   }
   return map;
 })();
+
+/** Convert ["name", "lines.line.dirn.pattern"] to { name: true, lines: { line: { dirn: { pattern: true } } } } */
+export function buildReturnedTags(fields: string[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const field of fields) {
+    const parts = field.split('.');
+    let current = result;
+    for (let i = 0; i < parts.length; i++) {
+      const key = parts[i]!;
+      if (i === parts.length - 1) {
+        current[key] = true;
+      } else {
+        if (typeof current[key] !== 'object' || current[key] === null) {
+          current[key] = {};
+        }
+        current = current[key] as Record<string, unknown>;
+      }
+    }
+  }
+  return result;
+}
 
 export const tools: ToolDefinition[] = [
   {
@@ -36,16 +61,21 @@ export const tools: ToolDefinition[] = [
         cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
         operation: { type: 'string', description: 'AXL operation name (e.g. addPhone, getUser, listLineGroup)' },
-        tags: {
+        data: {
           type: 'object',
-          description: 'Raw AXL operation input payload passed to executeOperation(operation, tags).',
+          description: 'AXL operation payload — the JSON body for the SOAP request (e.g. { "name": "SEPAAAABBBBCCCC" } for getPhone).',
+        },
+        returnedTags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'List of field names to return. Use dot notation for nested fields (e.g. ["name", "model", "lines.line.dirn.pattern"]). Converted to AXL returnedTags format automatically.',
         },
         opts: {
           type: 'object',
           description: 'Optional executeOperation options (clean/removeAttributes/etc).',
         },
       },
-      required: ['operation', 'tags'],
+      required: ['operation', 'data'],
     },
   },
   {
@@ -65,6 +95,20 @@ export const tools: ToolDefinition[] = [
         objectName: { type: 'string', description: 'Top-level object name (e.g. Phone, User, LineGroup)' },
       },
       required: ['objectName'],
+    },
+  },
+  {
+    name: 'axl_describe_operation',
+    description: 'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        operationName: {
+          type: 'string',
+          description: 'AXL operation name (e.g. addPhone, getUser, listLine). Use axl_list_operations to discover valid names.',
+        },
+      },
+      required: ['operationName'],
     },
   },
 ];
@@ -100,11 +144,37 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
           operations: ops,
         });
       }
+      case 'axl_describe_operation': {
+        const obj = assertRecord(args);
+        const operationName = requireString(obj, 'operationName');
+        const schema = AXL_OPERATION_SCHEMAS[operationName];
+        if (!schema) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `No schema for "${operationName}". Use axl_list_operations to find valid operations.`
+          );
+        }
+        const enabled = getEnabledTopLevelObjects();
+        if (enabled) {
+          const objectName = OPERATION_TO_OBJECT.get(operationName);
+          if (objectName && !enabled.has(objectName)) {
+            throw new McpError(
+              ErrorCode.InvalidParams,
+              `Operation "${operationName}" targets "${objectName}" which is not enabled`
+            );
+          }
+        }
+        return jsonResponse({ wsdlVersion: AXL_SCHEMAS_SOURCE_VERSION, operationName, ...schema });
+      }
       case 'axl_execute': {
         const obj = assertRecord(args);
         const credentials = resolveCredentials(extractCredentialOverrides(obj));
         const operation = requireString(obj, 'operation');
-        const tags = optionalObject(obj, 'tags') ?? {};
+        const data = optionalObject(obj, 'data') ?? {};
+        const returnedTagsArray = Array.isArray(obj.returnedTags) ? obj.returnedTags.filter((t): t is string => typeof t === 'string') : undefined;
+        const tags = returnedTagsArray && returnedTagsArray.length > 0
+          ? { ...data, returnedTags: buildReturnedTags(returnedTagsArray) }
+          : data;
         const rawOpts = optionalObject(obj, 'opts');
         const opts: ExecuteOperationOptions | undefined = rawOpts
           ? {

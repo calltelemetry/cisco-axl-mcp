@@ -45,7 +45,7 @@ describe('MCP Protocol Conformance', () => {
         cucm_password: 'pass',
         cucm_version: '14.0',
         operation: 'addPhone',
-        tags: {
+        data: {
           phone: {
             name: 'SEP001122334455',
             product: 'Cisco 8845',

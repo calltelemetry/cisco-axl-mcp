@@ -1,5 +1,14 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+
+// Default: permissive TLS (accept self-signed). CUCM labs commonly use self-signed certs.
+// Opt into strict verification with:
+// - CUCM_AXL_TLS_MODE=strict (recommended for prod)
+// - MCP_TLS_MODE=strict
+const tlsMode = (process.env.CUCM_AXL_TLS_MODE || process.env.MCP_TLS_MODE || '').toLowerCase();
+const strictTls = tlsMode === 'strict' || tlsMode === 'verify';
+if (!strictTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';

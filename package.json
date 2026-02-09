@@ -1,12 +1,10 @@
 {
   "name": "@calltelemetry/cisco-axl-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
   "type": "module",
   "main": "build/index.js",
-  "bin": {
-    "cisco-axl-mcp": "build/index.js"
-  },
+  "bin": "build/index.js",
   "files": [
     "build/**/*"
   ],

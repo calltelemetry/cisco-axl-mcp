@@ -182,8 +182,8 @@ describe('handleTool returnedTags pipeline', () => {
   function createCapturingMock() {
     const calls: { operation: string; data: unknown }[] = [];
     const api: AxlAPIService = {
-      executeOperation: async (_creds, operation, data) => {
-        calls.push({ operation: operation as string, data });
+      executeOperation: async (_creds: unknown, operation: unknown, data: unknown) => {
+        calls.push({ operation: String(operation), data });
         return { ok: true };
       },
     } as unknown as AxlAPIService;

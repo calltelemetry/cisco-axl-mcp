@@ -9,7 +9,7 @@
     "build/**/*"
   ],
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "scripts": {
     "generate:types": "tsx scripts/generate-types.ts",

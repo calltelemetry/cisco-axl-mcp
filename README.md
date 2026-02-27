@@ -2,7 +2,7 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
-Built on the [`cisco-axl`](https://github.com/sieteunoseis/cisco-axl) library by [Jeremy Worden](https://github.com/sieteunoseis).
+Gives LLMs progressive disclosure of the full AXL schema — discover object types, inspect operation fields and enums, then execute any CRUD operation — without hardcoding a single phone model or field name.
 
 ## What It Does
 

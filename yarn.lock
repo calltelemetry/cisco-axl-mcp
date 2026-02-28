@@ -51,20 +51,20 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@calltelemetry/cisco-axl-mcp@workspace:."
   dependencies:
-    "@eslint/js": "npm:9.39.3"
-    "@modelcontextprotocol/sdk": "npm:1.27.1"
-    "@types/node": "npm:25.3.2"
-    "@vitest/coverage-v8": "npm:4.0.18"
-    cisco-axl: "npm:1.4.1"
-    dotenv: "npm:17.3.1"
-    eslint: "npm:9.39.3"
-    prettier: "npm:3.8.1"
-    strong-soap: "npm:4.1.14"
-    tsx: "npm:4.21.0"
-    typescript: "npm:5.8.2"
-    typescript-eslint: "npm:8.56.1"
-    vite: "npm:7.3.1"
-    vitest: "npm:4.0.18"
+    "@eslint/js": "npm:^9.39.3"
+    "@modelcontextprotocol/sdk": "npm:^1.27.1"
+    "@types/node": "npm:^25.3.2"
+    "@vitest/coverage-v8": "npm:^4.0.18"
+    cisco-axl: "npm:^1.4.1"
+    dotenv: "npm:^17.3.1"
+    eslint: "npm:^9.39.3"
+    prettier: "npm:^3.8.1"
+    strong-soap: "npm:^4.1.14"
+    tsx: "npm:^4.21.0"
+    typescript: "npm:^5.8.2"
+    typescript-eslint: "npm:^8.56.1"
+    vite: "npm:^7.3.1"
+    vitest: "npm:^4.0.18"
     zod: "npm:^4.3.6"
   peerDependencies:
     typescript: ^5.0.0
@@ -345,7 +345,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@eslint/js@npm:9.39.3":
+"@eslint/js@npm:9.39.3, @eslint/js@npm:^9.39.3":
   version: 9.39.3
   resolution: "@eslint/js@npm:9.39.3"
   checksum: 10c0/df1c70d6681c8daf4a3c86dfac159fcd98a73c4620c4fbe2be6caab1f30a34c7de0ad88ab0e81162376d2cde1a2eed1c32eff5f917ca369870930a51f8e818f1
@@ -458,7 +458,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@modelcontextprotocol/sdk@npm:1.27.1":
+"@modelcontextprotocol/sdk@npm:^1.27.1":
   version: 1.27.1
   resolution: "@modelcontextprotocol/sdk@npm:1.27.1"
   dependencies:
@@ -726,7 +726,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:25.3.2":
+"@types/node@npm:^25.3.2":
   version: 25.3.2
   resolution: "@types/node@npm:25.3.2"
   dependencies:
@@ -870,7 +870,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@vitest/coverage-v8@npm:4.0.18":
+"@vitest/coverage-v8@npm:^4.0.18":
   version: 4.0.18
   resolution: "@vitest/coverage-v8@npm:4.0.18"
   dependencies:
@@ -1328,7 +1328,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"cisco-axl@npm:1.4.1":
+"cisco-axl@npm:^1.4.1":
   version: 1.4.1
   resolution: "cisco-axl@npm:1.4.1"
   dependencies:
@@ -1507,7 +1507,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"dotenv@npm:17.3.1":
+"dotenv@npm:^17.3.1":
   version: 17.3.1
   resolution: "dotenv@npm:17.3.1"
   checksum: 10c0/c78e0c2d5a549c751e544cc60e2b95e7cb67e0c551f42e094d161c6b297aa44b630a3c2dcacf5569e529a6c2a6b84e2ab9be8d37b299d425df5a18b81ce4a35f
@@ -1764,7 +1764,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"eslint@npm:9.39.3":
+"eslint@npm:^9.39.3":
   version: 9.39.3
   resolution: "eslint@npm:9.39.3"
   dependencies:
@@ -3320,7 +3320,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"prettier@npm:3.8.1":
+"prettier@npm:^3.8.1":
   version: 3.8.1
   resolution: "prettier@npm:3.8.1"
   bin:
@@ -3812,7 +3812,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"strong-soap@npm:4.1.14, strong-soap@npm:^4.1.5":
+"strong-soap@npm:^4.1.14, strong-soap@npm:^4.1.5":
   version: 4.1.14
   resolution: "strong-soap@npm:4.1.14"
   dependencies:
@@ -3928,7 +3928,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tsx@npm:4.21.0":
+"tsx@npm:^4.21.0":
   version: 4.21.0
   resolution: "tsx@npm:4.21.0"
   dependencies:
@@ -3980,7 +3980,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typescript-eslint@npm:8.56.1":
+"typescript-eslint@npm:^8.56.1":
   version: 8.56.1
   resolution: "typescript-eslint@npm:8.56.1"
   dependencies:
@@ -3995,23 +3995,23 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typescript@npm:5.8.2":
-  version: 5.8.2
-  resolution: "typescript@npm:5.8.2"
+"typescript@npm:^5.8.2":
+  version: 5.9.3
+  resolution: "typescript@npm:5.9.3"
   bin:
     tsc: bin/tsc
     tsserver: bin/tsserver
-  checksum: 10c0/5c4f6fbf1c6389b6928fe7b8fcd5dc73bb2d58cd4e3883f1d774ed5bd83b151cbac6b7ecf11723de56d4676daeba8713894b1e9af56174f2f9780ae7848ec3c6
+  checksum: 10c0/6bd7552ce39f97e711db5aa048f6f9995b53f1c52f7d8667c1abdc1700c68a76a308f579cd309ce6b53646deb4e9a1be7c813a93baaf0a28ccd536a30270e1c5
   languageName: node
   linkType: hard
 
-"typescript@patch:typescript@npm%3A5.8.2#optional!builtin<compat/typescript>":
-  version: 5.8.2
-  resolution: "typescript@patch:typescript@npm%3A5.8.2#optional!builtin<compat/typescript>::version=5.8.2&hash=5786d5"
+"typescript@patch:typescript@npm%3A^5.8.2#optional!builtin<compat/typescript>":
+  version: 5.9.3
+  resolution: "typescript@patch:typescript@npm%3A5.9.3#optional!builtin<compat/typescript>::version=5.9.3&hash=5786d5"
   bin:
     tsc: bin/tsc
     tsserver: bin/tsserver
-  checksum: 10c0/5448a08e595cc558ab321e49d4cac64fb43d1fa106584f6ff9a8d8e592111b373a995a1d5c7f3046211c8a37201eb6d0f1566f15cdb7a62a5e3be01d087848e2
+  checksum: 10c0/ad09fdf7a756814dce65bc60c1657b40d44451346858eea230e10f2e95a289d9183b6e32e5c11e95acc0ccc214b4f36289dcad4bf1886b0adb84d711d336a430
   languageName: node
   linkType: hard
 
@@ -4099,7 +4099,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vite@npm:7.3.1, vite@npm:^6.0.0 || ^7.0.0":
+"vite@npm:^6.0.0 || ^7.0.0, vite@npm:^7.3.1":
   version: 7.3.1
   resolution: "vite@npm:7.3.1"
   dependencies:
@@ -4154,7 +4154,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vitest@npm:4.0.18":
+"vitest@npm:^4.0.18":
   version: 4.0.18
   resolution: "vitest@npm:4.0.18"
   dependencies:

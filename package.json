@@ -37,23 +37,23 @@
   "author": "CallTelemetry",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.27.1",
-    "@types/node": "25.3.2",
-    "cisco-axl": "1.4.1",
-    "dotenv": "17.3.1",
-    "strong-soap": "4.1.14",
-    "typescript": "5.8.2",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/node": "^25.3.2",
+    "cisco-axl": "^1.4.1",
+    "dotenv": "^17.3.1",
+    "strong-soap": "^4.1.14",
+    "typescript": "^5.8.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.3",
-    "@vitest/coverage-v8": "4.0.18",
-    "eslint": "9.39.3",
-    "prettier": "3.8.1",
-    "tsx": "4.21.0",
-    "typescript-eslint": "8.56.1",
-    "vite": "7.3.1",
-    "vitest": "4.0.18"
+    "@eslint/js": "^9.39.3",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^9.39.3",
+    "prettier": "^3.8.1",
+    "tsx": "^4.21.0",
+    "typescript-eslint": "^8.56.1",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

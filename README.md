@@ -23,28 +23,39 @@ Supports CUCM versions **11.0, 11.5, 12.0, 12.5, 14.0, and 15.0**.
 
 ## Installation
 
-```bash
-npm install -g @calltelemetry/cisco-axl-mcp
-```
-
-Or with npx (no install):
+No install required — run directly with npx:
 
 ```bash
 npx @calltelemetry/cisco-axl-mcp
 ```
 
+Or install globally:
+
+```bash
+npm install -g @calltelemetry/cisco-axl-mcp
+```
+
 ## Quick Start
 
-### Claude Code
+### Claude Code (one-liner)
 
-Add to `~/.claude.json`:
+```bash
+claude mcp add cucm_axl \
+  -e CUCM_HOST=cucm.example.com \
+  -e CUCM_USERNAME=axl_user \
+  -e CUCM_PASSWORD=axl_password \
+  -e CUCM_VERSION=14.0 \
+  -- npx @calltelemetry/cisco-axl-mcp
+```
+
+Or add to `~/.claude.json` manually:
 
 ```json
 {
   "mcpServers": {
     "cucm_axl": {
-      "command": "cisco-axl-mcp",
-      "args": [],
+      "command": "npx",
+      "args": ["@calltelemetry/cisco-axl-mcp"],
       "env": {
         "CUCM_HOST": "cucm.example.com",
         "CUCM_USERNAME": "axl_user",
@@ -66,7 +77,7 @@ CUCM_HOST=cucm.example.com \
 CUCM_USERNAME=axl_user \
 CUCM_PASSWORD=axl_password \
 CUCM_VERSION=14.0 \
-cisco-axl-mcp
+npx @calltelemetry/cisco-axl-mcp
 ```
 
 ## Configuration
@@ -91,7 +102,7 @@ Restrict which object types the server can operate on:
 AXL_MCP_ENABLED_OBJECTS=Phone,User,LineGroup
 
 # CLI argument
-cisco-axl-mcp --enabled-objects Phone,User,LineGroup
+npx @calltelemetry/cisco-axl-mcp --enabled-objects Phone,User,LineGroup
 
 # JSON config
 AXL_MCP_CONFIG='{"enabled_objects": ["Phone", "User", "LineGroup"]}'

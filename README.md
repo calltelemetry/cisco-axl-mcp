@@ -1,5 +1,9 @@
 # cisco-axl-mcp
 
+[![CI](https://github.com/calltelemetry/cisco-axl-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/calltelemetry/cisco-axl-mcp/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/calltelemetry/cisco-axl-mcp/graph/badge.svg)](https://codecov.io/gh/calltelemetry/cisco-axl-mcp)
+[![npm](https://img.shields.io/npm/v/@calltelemetry/cisco-axl-mcp)](https://www.npmjs.com/package/@calltelemetry/cisco-axl-mcp)
+
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
 All AXL operations are supported, with schemas auto-generated from Cisco's WSDL version data. Gives LLMs progressive disclosure of the full AXL schema — discover object types, inspect operation fields and enums, then execute any CRUD operation — without hardcoding a single phone model or field name.

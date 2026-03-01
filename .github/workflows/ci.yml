@@ -28,8 +28,13 @@ jobs:
       - name: Lint
         run: yarn lint --max-warnings=50
 
-      - name: Test
-        run: yarn test
+      - name: Test with coverage
+        run: yarn vitest run --coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Build
         run: yarn build

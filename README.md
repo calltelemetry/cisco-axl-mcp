@@ -23,16 +23,10 @@ Supports CUCM versions **11.0, 11.5, 12.0, 12.5, 14.0, and 15.0**.
 
 ## Installation
 
-No install required — run directly with npx:
+No install required — npx downloads and runs automatically:
 
 ```bash
 npx @calltelemetry/cisco-axl-mcp
-```
-
-Or install globally:
-
-```bash
-npm install -g @calltelemetry/cisco-axl-mcp
 ```
 
 ## Quick Start

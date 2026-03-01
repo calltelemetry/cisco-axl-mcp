@@ -38,11 +38,11 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/node": "^25.3.2",
+    "@types/node": "^25.3.3",
     "cisco-axl": "^1.4.1",
     "dotenv": "^17.3.1",
     "strong-soap": "^4.1.14",
-    "typescript": "^5.8.2",
+    "typescript": "^5.9.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {

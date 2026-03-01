@@ -413,17 +413,34 @@ The AXL API user needs the **Standard AXL API Access** role in CUCM. To set this
 
 ## Development
 
+Requires **Node.js 22+** and **Yarn 4** (via Corepack).
+
 ### Building and Testing
 
 ```bash
 git clone https://github.com/calltelemetry/cisco-axl-mcp.git
 cd cisco-axl-mcp
+corepack enable           # Activates Yarn 4 via packageManager field
 yarn install
-yarn build       # Uses pre-committed generated types — no WSDL schemas needed
-yarn test:mcp
+yarn build                # Uses pre-committed generated types — no WSDL schemas needed
+yarn test                 # Run full test suite
 ```
 
 The generated TypeScript types in `src/types/generated/` and `generated/` are checked into the repo. Contributors can build, test, and modify the MCP server without needing access to any WSDL files.
+
+### Available Scripts
+
+| Command | Description |
+|---------|-------------|
+| `yarn build` | Build with Vite |
+| `yarn test` | Run all tests (Vitest) |
+| `yarn test:mcp` | Run MCP conformance tests only |
+| `yarn typecheck` | TypeScript type checking |
+| `yarn lint` | ESLint |
+| `yarn lint:fix` | ESLint with auto-fix |
+| `yarn format` | Prettier format |
+| `yarn format:check` | Prettier check |
+| `yarn validate` | Typecheck + lint + test (full pre-commit check) |
 
 ### Regenerating AXL Types
 
@@ -441,6 +458,18 @@ yarn generate:types --schema-dir /path/to/schema
 ```
 
 After regeneration, commit the updated generated files.
+
+## Contributing
+
+Contributions are welcome! To get started:
+
+1. Fork the repo and create a feature branch
+2. Run `corepack enable && yarn install`
+3. Make your changes
+4. Run `yarn validate` (typecheck + lint + tests must all pass)
+5. Open a pull request against `main`
+
+CI runs automatically on pull requests — typecheck, lint, tests with coverage, and build must all pass before merge. The `main` branch is protected and requires CI to pass.
 
 ## Acknowledgments
 

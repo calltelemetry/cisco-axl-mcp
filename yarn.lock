@@ -51,13 +51,13 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@calltelemetry/cisco-axl-mcp@workspace:."
   dependencies:
-    "@eslint/js": "npm:^9.39.3"
+    "@eslint/js": "npm:^9.39.4"
     "@modelcontextprotocol/sdk": "npm:^1.27.1"
-    "@types/node": "npm:^25.3.3"
+    "@types/node": "npm:^25.3.5"
     "@vitest/coverage-v8": "npm:^4.0.18"
     cisco-axl: "npm:^1.4.1"
     dotenv: "npm:^17.3.1"
-    eslint: "npm:^9.39.3"
+    eslint: "npm:^9.39.4"
     prettier: "npm:^3.8.1"
     strong-soap: "npm:^4.1.14"
     tsx: "npm:^4.21.0"
@@ -345,7 +345,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@eslint/js@npm:9.39.4, @eslint/js@npm:^9.39.3":
+"@eslint/js@npm:9.39.4, @eslint/js@npm:^9.39.4":
   version: 9.39.4
   resolution: "@eslint/js@npm:9.39.4"
   checksum: 10c0/5aa7dea2cbc5decf7f5e3b0c6f86a084ccee0f792d288ca8e839f8bc1b64e03e227068968e49b26096e6f71fd857ab6e42691d1b993826b9a3883f1bdd7a0e46
@@ -719,7 +719,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:^25.3.3":
+"@types/node@npm:^25.3.5":
   version: 25.3.5
   resolution: "@types/node@npm:25.3.5"
   dependencies:
@@ -1741,7 +1741,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"eslint@npm:^9.39.3":
+"eslint@npm:^9.39.4":
   version: 9.39.4
   resolution: "eslint@npm:9.39.4"
   dependencies:

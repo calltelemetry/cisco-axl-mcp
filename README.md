@@ -8,7 +8,19 @@ Built by [Call Telemetry](https://calltelemetry.com) — realtime tools for Cisc
 
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
-All AXL operations are supported, with schemas auto-generated from Cisco's WSDL version data. Gives LLMs progressive disclosure of the full AXL schema — discover object types, inspect operation fields and enums, then execute any CRUD operation — without hardcoding a single phone model or field name.
+**You describe the task in plain language. The LLM figures out the AXL operations.**
+
+The MCP server provides progressive disclosure of Cisco's raw WSDL schema — 232 object types, 800+ operations, thousands of fields — through four composable tools. The LLM discovers what's available, inspects the schema, and shapes the correct SOAP requests on your behalf. No AXL expertise required.
+
+Instead of hand-crafting XML payloads, you say things like:
+
+- *"Provision 2,000 phones from this Excel spreadsheet"*
+- *"Audit end users and find anyone missing an associated phone device"*
+- *"Build a report of all 7940G phones in Device Pool Dallas-DP"*
+- *"Set up a hunt group for the support team with round-robin distribution"*
+- *"Enable Built-in Bridge on every phone in the Sales CSS"*
+
+The LLM uses the four tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed. The schema is never hardcoded; it's read from the WSDL at runtime, so every CUCM version's fields, enums, and objects are automatically correct.
 
 ## What It Does
 

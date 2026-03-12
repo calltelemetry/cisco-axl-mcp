@@ -18,6 +18,34 @@ describe('MCP Protocol Conformance', () => {
     });
   });
 
+  it('all tools should have annotations with required hints', () => {
+    const validHintKeys = ['title', 'readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
+    getTools().forEach(tool => {
+      expect(tool.annotations, `Tool ${tool.name} is missing annotations`).toBeDefined();
+      const annotations = tool.annotations!;
+      expect(typeof annotations.title).toBe('string');
+      expect(typeof annotations.readOnlyHint).toBe('boolean');
+      expect(typeof annotations.destructiveHint).toBe('boolean');
+      expect(typeof annotations.idempotentHint).toBe('boolean');
+      expect(typeof annotations.openWorldHint).toBe('boolean');
+      // No unexpected keys
+      for (const key of Object.keys(annotations)) {
+        expect(validHintKeys, `Tool ${tool.name} has unexpected annotation key "${key}"`).toContain(key);
+      }
+    });
+  });
+
+  it('read-only tools should not be marked destructive', () => {
+    getTools().forEach(tool => {
+      if (tool.annotations?.readOnlyHint) {
+        expect(
+          tool.annotations.destructiveHint,
+          `Tool ${tool.name} is readOnly but also destructive`
+        ).toBe(false);
+      }
+    });
+  });
+
   it('required fields should reference existing properties', () => {
     getTools().forEach(tool => {
       if (tool.inputSchema.required) {

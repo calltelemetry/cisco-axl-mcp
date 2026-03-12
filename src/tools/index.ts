@@ -53,6 +53,13 @@ export const tools: ToolDefinition[] = [
   {
     name: 'axl_execute',
     description: 'Execute any AXL operation by name (raw access via cisco-axl executeOperation)',
+    annotations: {
+      title: 'Execute AXL Operation',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -81,6 +88,13 @@ export const tools: ToolDefinition[] = [
   {
     name: 'axl_list_objects',
     description: 'List top-level AXL objects discovered in the WSDL',
+    annotations: {
+      title: 'List AXL Objects',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -89,6 +103,13 @@ export const tools: ToolDefinition[] = [
   {
     name: 'axl_list_operations',
     description: 'List CRUD operation names for a given top-level AXL object (from generated WSDL map)',
+    annotations: {
+      title: 'List AXL Operations',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -100,6 +121,13 @@ export const tools: ToolDefinition[] = [
   {
     name: 'axl_describe_operation',
     description: 'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute',
+    annotations: {
+      title: 'Describe AXL Operation Schema',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {

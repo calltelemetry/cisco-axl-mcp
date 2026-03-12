@@ -10,7 +10,9 @@ An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direc
 
 **You describe the task in plain language. The LLM figures out the AXL operations.**
 
-The MCP server provides progressive disclosure of Cisco's raw WSDL schema — 232 object types, 800+ operations, thousands of fields — through four composable tools. The LLM discovers what's available, inspects the schema, and shapes the correct SOAP requests on your behalf. No AXL expertise required.
+The MCP server ships with pre-parsed schemas from Cisco's official AXL WSDL for every supported CUCM version (11.0, 11.5, 12.0, 12.5, 14.0, 15.0). When you set `CUCM_VERSION`, it loads the schema for **your exact version** — so the LLM only sees object types, operations, fields, and enums that actually exist on your CallManager. No guessing, no hallucinated field names, no version mismatches.
+
+Four composable tools give the LLM progressive disclosure of this schema — 232 object types, 800+ operations, thousands of fields — so it can discover what's available, inspect required fields, and shape correct SOAP requests on your behalf. No AXL expertise required.
 
 Instead of hand-crafting XML payloads, you say things like:
 
@@ -20,7 +22,7 @@ Instead of hand-crafting XML payloads, you say things like:
 - *"Set up a hunt group for the support team with round-robin distribution"*
 - *"Enable Built-in Bridge on every phone in the Sales CSS"*
 
-The LLM uses the four tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed. The schema is never hardcoded; it's read from the WSDL at runtime, so every CUCM version's fields, enums, and objects are automatically correct.
+The LLM uses the four tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
 
 ## What It Does
 

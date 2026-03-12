@@ -8,7 +8,21 @@ Built by [Call Telemetry](https://calltelemetry.com) — realtime tools for Cisc
 
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
-All AXL operations are supported, with schemas auto-generated from Cisco's WSDL version data. Gives LLMs progressive disclosure of the full AXL schema — discover object types, inspect operation fields and enums, then execute any CRUD operation — without hardcoding a single phone model or field name.
+**You describe the task in plain language. The LLM figures out the AXL operations.**
+
+The MCP server ships with pre-parsed schemas from Cisco's official AXL WSDL for every supported CUCM version (11.0, 11.5, 12.0, 12.5, 14.0, 15.0). When you set `CUCM_VERSION`, it loads the schema for **your exact version** — so the LLM only sees object types, operations, fields, and enums that actually exist on your CallManager. No guessing, no hallucinated field names, no version mismatches.
+
+Four composable tools give the LLM progressive disclosure of this schema — 232 object types, 800+ operations, thousands of fields — so it can discover what's available, inspect required fields, and shape correct SOAP requests on your behalf. No AXL expertise required.
+
+Instead of hand-crafting XML payloads, you say things like:
+
+- *"Provision 2,000 phones from this Excel spreadsheet"*
+- *"Audit end users and find anyone missing an associated phone device"*
+- *"Build a report of all 7940G phones in Device Pool Dallas-DP"*
+- *"Set up a hunt group for the support team with round-robin distribution"*
+- *"Enable Built-in Bridge on every phone in the Sales CSS"*
+
+The LLM uses the four tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
 
 ## What It Does
 
@@ -227,13 +241,107 @@ axl_describe_operation    → what fields does addPhone require?
 axl_execute               → call addPhone with the correct payload
 ```
 
-**Example: describe addPhone**
+Fields marked `required: true` must be included. Fields with `enum` or `enumType` constrain valid values. See the [Examples](#examples--llm-conversations-real-cucm-15-output) section below for full interactive walkthroughs.
 
+## Examples — LLM Conversations (Real CUCM 15 Output)
+
+All examples below are real interactions with a live CUCM 15.0.1 cluster, showing how an LLM uses the tools conversationally.
+
+---
+
+### "What can I manage through AXL?"
+
+> **User:** What object types are available in AXL?
+
+<details><summary>Tool call: <code>axl_list_objects</code></summary>
+
+```json
+{}
 ```
-Tool call → axl_describe_operation
-  operationName: "addPhone"
 
-Returns:
+```json
+{
+  "wsdlVersion": "15.0",
+  "objectCount": 232,
+  "objects": [
+    "AarGroup", "Announcement", "AppUser", "CallManager",
+    "CallManagerGroup", "CallPark", "CallPickupGroup",
+    "CommonDeviceConfig", "Css", "CtiRoutePoint", "DevicePool",
+    "DeviceProfile", "H323Gateway", "H323Trunk", "HuntList",
+    "HuntPilot", "Line", "LineGroup", "Location",
+    "MediaResourceGroup", "MediaResourceList", "Phone",
+    "RecordingProfile", "Region", "RouteGroup", "RouteList",
+    "RoutePartition", "RoutePattern", "SipProfile", "SipTrunk",
+    "TransPattern", "User", "VoiceMailProfile",
+    "... 199 more objects"
+  ]
+}
+```
+
+</details>
+
+> **Assistant:** AXL exposes **232 object types** on your CUCM 15.0 cluster. The most commonly used ones:
+>
+> - **Devices:** Phone, DeviceProfile, H323Gateway, SipTrunk, CtiRoutePoint
+> - **Dial plan:** Line, RoutePartition, Css, RoutePattern, TransPattern, HuntList, HuntPilot, LineGroup
+> - **Users:** User, AppUser
+> - **Infrastructure:** DevicePool, CallManagerGroup, Region, Location, MediaResourceList
+>
+> Want me to check what operations are available for a specific object?
+
+---
+
+### "What operations can I do with phones?"
+
+> **User:** What CRUD operations exist for Phone?
+
+<details><summary>Tool call: <code>axl_list_operations</code></summary>
+
+```json
+{ "objectName": "Phone" }
+```
+
+```json
+{
+  "wsdlVersion": "15.0",
+  "objectName": "Phone",
+  "operations": {
+    "add": "addPhone",
+    "get": "getPhone",
+    "list": "listPhone",
+    "remove": "removePhone",
+    "update": "updatePhone"
+  }
+}
+```
+
+</details>
+
+> **Assistant:** Phone supports all 5 CRUD operations:
+>
+> | Operation | Name | Use case |
+> |-----------|------|----------|
+> | **add** | `addPhone` | Provision a new device |
+> | **get** | `getPhone` | Retrieve full config by name or UUID |
+> | **list** | `listPhone` | Search/filter phones with wildcards |
+> | **update** | `updatePhone` | Modify settings on an existing phone |
+> | **remove** | `removePhone` | Delete a device |
+>
+> Want me to describe the required fields for any of these?
+
+---
+
+### "What fields does addPhone need?"
+
+> **User:** What are the required fields for adding a phone?
+
+<details><summary>Tool call: <code>axl_describe_operation</code> — schema discovery</summary>
+
+```json
+{ "operationName": "addPhone" }
+```
+
+```json
 {
   "wsdlVersion": "15.0",
   "operationName": "addPhone",
@@ -243,139 +351,163 @@ Returns:
     "phone": {
       "type": "object",
       "required": true,
-      "typeName": "XPhone",
       "fields": {
-        "name": { "type": "string", "required": true },
-        "product": { "type": "string", "required": true, "enumType": "XProduct" },
-        "protocol": { "type": "string", "required": true, "enum": ["SIP", "SCCP"] },
-        "devicePoolName": { "type": "string", "required": true },
-        "description": { "type": "string" },
-        ...
+        "name":            { "type": "string",  "required": true },
+        "product":         { "type": "string",  "required": true, "enumType": "XProduct" },
+        "class":           { "type": "string",  "required": true, "enum": ["Phone", "Gateway", "..."] },
+        "protocol":        { "type": "string",  "required": true, "enum": ["SCCP", "SIP", "..."] },
+        "protocolSide":    { "type": "string",  "required": true, "default": "User" },
+        "devicePoolName":  { "type": "string",  "required": true },
+        "commonPhoneConfigName": { "type": "string", "required": true },
+        "locationName":    { "type": "string",  "required": true },
+        "phoneTemplateName": { "type": "string", "required": true },
+        "builtInBridgeStatus": { "type": "string", "required": true, "default": "Default" },
+        "packetCaptureMode": { "type": "string", "required": true, "default": "None" },
+        "certificateOperation": { "type": "string", "required": true, "default": "No Pending Operation" },
+        "deviceMobilityMode": { "type": "string", "required": true, "default": "Default" },
+        "description":     { "type": "string" },
+        "callingSearchSpaceName": { "type": "string" },
+        "lines":           { "type": "object", "fields": { "line": ["index", "dirn", "..."] } },
+        "...70+ optional fields"
       }
     }
   }
 }
 ```
 
-Fields marked `required: true` must be included. Fields with `enum` or `enumType` constrain valid values.
+</details>
 
-## Examples
+> **Assistant:** `addPhone` requires a `phone` object with these mandatory fields:
+>
+> | Field | Type | Notes |
+> |-------|------|-------|
+> | `name` | string | Device name (e.g. `SEPAABBCCDDEEFF`) |
+> | `product` | enum | Product model (uses `XProduct` enum — large list) |
+> | `class` | enum | `Phone`, `Gateway`, etc. |
+> | `protocol` | enum | `SIP` or `SCCP` (most common) |
+> | `devicePoolName` | string | FK to a Device Pool |
+> | `commonPhoneConfigName` | string | FK to Common Phone Config |
+> | `locationName` | string | FK to a Location |
+> | `phoneTemplateName` | string | FK to a Phone Button Template |
+>
+> Several required fields have defaults (`protocolSide: "User"`, `builtInBridgeStatus: "Default"`, etc.) so you can omit them unless you need non-default values. There are 70+ optional fields for lines, speed dials, BLF, services, security, and more.
 
-### Look up a phone
+---
 
-```json
-{
-  "operation": "getPhone",
-  "data": { "name": "SEP001122334455" },
-  "returnedTags": ["name", "model", "callingSearchSpaceName", "devicePoolName"]
-}
-```
+### "Show me all phones on the cluster"
 
-### Get a phone with line and recording details
+> **User:** List all the phones configured on CUCM.
 
-```json
-{
-  "operation": "getPhone",
-  "data": { "name": "SEP001122334455" },
-  "returnedTags": [
-    "name",
-    "model",
-    "builtInBridgeStatus",
-    "callingSearchSpaceName",
-    "lines.line.index",
-    "lines.line.dirn.pattern",
-    "lines.line.dirn.routePartitionName",
-    "lines.line.recordingFlag",
-    "lines.line.recordingMediaSource",
-    "lines.line.recordingProfileName",
-    "lines.line.monitoringCssName"
-  ]
-}
-```
-
-### Search for users
-
-```json
-{
-  "operation": "listUser",
-  "data": { "searchCriteria": { "lastName": "Smith%" } },
-  "returnedTags": ["firstName", "lastName", "userid", "department"]
-}
-```
-
-The `%` wildcard works like SQL LIKE — `Smith%` matches any last name starting with "Smith", `%` alone returns all.
-
-### List phones with line info
+<details><summary>Tool call: <code>axl_execute</code> — listPhone</summary>
 
 ```json
 {
   "operation": "listPhone",
-  "data": { "searchCriteria": { "name": "%" } },
-  "returnedTags": ["name", "model", "lines.line.dirn.pattern"]
+  "data": {
+    "searchCriteria": { "name": "SEP%" },
+    "returnedTags": { "name": "", "model": "", "description": "" }
+  }
 }
 ```
 
-### Add a route partition
+```json
+{
+  "phone": [
+    { "name": "SEP000832C78E0F", "model": "Cisco 7821",  "description": "Auto 1001" },
+    { "name": "SEP000C291130BA", "model": "Cisco IP Communicator", "description": "Auto 1002" },
+    { "name": "SEP0022905C7710", "model": "Cisco 7975",  "description": "Auto 1000 7975 Phone3" },
+    { "name": "SEP010CE46F48A2", "model": "Cisco 7965",  "description": "Lexie Towne - Ardith" },
+    { "name": "SEP505C885DF37F", "model": "Cisco 9841",  "description": "Auto 1003 9841" },
+    "... 118 phones total"
+  ]
+}
+```
+
+</details>
+
+> **Assistant:** Found **123 phones** configured in AXL. Here's a summary by model:
+>
+> | Model | Count | Examples |
+> |-------|-------|---------|
+> | Cisco 7965 | ~60 | Provisioned users (Lexie Towne, Gabe Gottlieb, ...) |
+> | Cisco 7945 | ~55 | Provisioned users |
+> | Cisco 7821 | 1 | SEP000832C78E0F — Auto 1001 |
+> | Cisco 7975 | 1 | SEP0022905C7710 — Auto 1000 |
+> | Cisco 9841 | 1 | SEP505C885DF37F — Auto 1003 |
+> | Cisco IP Communicator | 1 | SEP000C291130BA — Auto 1002 |
+>
+> The bulk of the inventory appears to be synthetic test data (7945/7965 models). The 3 "Auto" phones are the real lab devices.
+
+---
+
+### "Get the full config for a specific phone"
+
+> **User:** Show me the config for the 7821 phone, including its line details.
+
+<details><summary>Tool call: <code>axl_execute</code> — getPhone with nested returnedTags</summary>
 
 ```json
 {
-  "operation": "addRoutePartition",
-  "data": {
-    "routePartition": {
-      "name": "INTERNAL-PT",
-      "description": "Internal directory numbers"
+  "operation": "getPhone",
+  "data": { "name": "SEP000832C78E0F" },
+  "returnedTags": [
+    "name", "model", "description",
+    "devicePoolName", "callingSearchSpaceName",
+    "lines.line.index",
+    "lines.line.dirn.pattern",
+    "lines.line.dirn.routePartitionName"
+  ]
+}
+```
+
+```json
+{
+  "phone": {
+    "name": "SEP000832C78E0F",
+    "description": "Auto 1001",
+    "model": "Cisco 7821",
+    "callingSearchSpaceName": "CT-Internal-CSS",
+    "devicePoolName": "Default",
+    "lines": {
+      "line": [
+        {
+          "index": "1",
+          "dirn": {
+            "pattern": "1001",
+            "routePartitionName": "CT-Internal"
+          }
+        }
+      ]
     }
   }
 }
 ```
 
-Add operations wrap the payload in a container element named after the object type.
+</details>
 
-### Get a user's device associations
+> **Assistant:** Here's the 7821 config:
+>
+> - **Device:** SEP000832C78E0F (Cisco 7821)
+> - **Description:** Auto 1001
+> - **Device Pool:** Default
+> - **Calling Search Space:** CT-Internal-CSS
+> - **Line 1:** DN `1001` in partition `CT-Internal`
+>
+> The `returnedTags` dot notation (`lines.line.dirn.pattern`) automatically expands into the nested AXL structure — you don't need to build the XML nesting manually.
+
+---
+
+### "What operations exist for LineGroup?"
+
+> **User:** I need to set up hunt groups. What can I do with LineGroup?
+
+<details><summary>Tool call: <code>axl_list_operations</code></summary>
 
 ```json
-{
-  "operation": "getUser",
-  "data": { "userid": "jsmith" },
-  "returnedTags": ["firstName", "lastName", "associatedDevices", "primaryExtension"]
-}
+{ "objectName": "LineGroup" }
 ```
-
-### Update a phone
 
 ```json
-{
-  "operation": "updatePhone",
-  "data": {
-    "name": "SEPAAAABBBBCCCC",
-    "builtInBridgeStatus": "On",
-    "callInfoPrivacyStatus": "Off"
-  }
-}
-```
-
-Update operations take the object identifier (`name` or `uuid`) plus the fields to change.
-
-### Discover available objects
-
-```
-Tool call → axl_list_objects
-
-Returns:
-{
-  "wsdlVersion": "15.0",
-  "objectCount": 6,
-  "objects": ["Phone", "User", "AppUser", "Line", "LineGroup", "HuntList"]
-}
-```
-
-### Check operations for an object
-
-```
-Tool call → axl_list_operations
-  objectName: "LineGroup"
-
-Returns:
 {
   "wsdlVersion": "15.0",
   "objectName": "LineGroup",
@@ -383,18 +515,60 @@ Returns:
     "add": "addLineGroup",
     "get": "getLineGroup",
     "list": "listLineGroup",
-    "update": "updateLineGroup",
-    "remove": "removeLineGroup"
+    "remove": "removeLineGroup",
+    "update": "updateLineGroup"
   }
 }
 ```
 
-### Multi-cluster query
+</details>
+
+> **Assistant:** LineGroup supports full CRUD. For a hunt group setup, the typical workflow is:
+>
+> 1. **`addLineGroup`** — Create a line group with member DNs and a distribution algorithm (Top Down, Circular, etc.)
+> 2. **`addHuntList`** — Create a hunt list referencing one or more line groups
+> 3. **`addHuntPilot`** — Create the pilot number users dial to reach the hunt group
+>
+> Want me to describe the required fields for `addLineGroup` so we can build the payload?
+
+---
+
+### "Enable Built-in Bridge on a phone"
+
+> **User:** Turn on BIB for the 7821.
+
+<details><summary>Tool call: <code>axl_execute</code> — updatePhone</summary>
 
 ```json
 {
-  "operation": "getPhone",
-  "data": { "name": "SEP112233445566" },
+  "operation": "updatePhone",
+  "data": {
+    "name": "SEP000832C78E0F",
+    "builtInBridgeStatus": "On"
+  }
+}
+```
+
+```json
+{ "return": "{7C6B3FC2-C043-480F-811D-641BA7E47909}" }
+```
+
+</details>
+
+> **Assistant:** Done — Built-in Bridge is now **On** for SEP000832C78E0F. The phone will need to reset for the change to take effect. Update operations just take the device name plus the fields to change.
+
+---
+
+### "Query a different cluster"
+
+> **User:** Can you check phones on our London cluster too?
+
+> **Assistant:** Yes — each tool call can override credentials for a different cluster without restarting the MCP server:
+
+```json
+{
+  "operation": "listPhone",
+  "data": { "searchCriteria": { "name": "SEP%" }, "returnedTags": { "name": "", "model": "" } },
   "cucm_host": "10.1.1.5",
   "cucm_username": "london_axl",
   "cucm_password": "london_pass",
@@ -402,7 +576,7 @@ Returns:
 }
 ```
 
-Credential overrides let you query different clusters without restarting the MCP server.
+> The `cucm_host`, `cucm_username`, `cucm_password`, and `cucm_version` parameters override the defaults on a per-call basis. This lets you query multiple clusters in a single session.
 
 ## CUCM Prerequisites
 

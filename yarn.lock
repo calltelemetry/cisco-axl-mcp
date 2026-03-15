@@ -53,8 +53,8 @@ __metadata:
   dependencies:
     "@eslint/js": "npm:^9.39.4"
     "@modelcontextprotocol/sdk": "npm:^1.27.1"
-    "@types/node": "npm:^25.3.5"
-    "@vitest/coverage-v8": "npm:^4.0.18"
+    "@types/node": "npm:^25.5.0"
+    "@vitest/coverage-v8": "npm:^4.1.0"
     cisco-axl: "npm:^1.4.1"
     dotenv: "npm:^17.3.1"
     eslint: "npm:^9.39.4"
@@ -62,9 +62,9 @@ __metadata:
     strong-soap: "npm:^4.1.14"
     tsx: "npm:^4.21.0"
     typescript: "npm:^5.9.3"
-    typescript-eslint: "npm:^8.56.1"
+    typescript-eslint: "npm:^8.57.0"
     vite: "npm:^7.3.1"
-    vitest: "npm:^4.0.18"
+    vitest: "npm:^4.1.0"
     zod: "npm:^4.3.6"
   peerDependencies:
     typescript: ^5.0.0
@@ -895,7 +895,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/node@npm:^25.3.5":
+"@types/node@npm:^25.5.0":
   version: 25.5.0
   resolution: "@types/node@npm:25.5.0"
   dependencies:
@@ -1039,7 +1039,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@vitest/coverage-v8@npm:^4.0.18":
+"@vitest/coverage-v8@npm:^4.1.0":
   version: 4.1.0
   resolution: "@vitest/coverage-v8@npm:4.1.0"
   dependencies:
@@ -2491,9 +2491,9 @@ __metadata:
   linkType: hard
 
 "hono@npm:^4.11.4":
-  version: 4.12.7
-  resolution: "hono@npm:4.12.7"
-  checksum: 10c0/1f6936582069fbcb96bed803b00ccd88a735746a1b3373f6b659b28e9bc5312f26d1368de7b2a72da0247280cbe636333946a87394c2845c3e9b46f400646eb0
+  version: 4.12.8
+  resolution: "hono@npm:4.12.8"
+  checksum: 10c0/10b8a5012e362824d97d0f11895da6e7ba3195320399684f07b3743801986647aeb8395f189a8fefbe8d4567f943c23dc0ba73834ce9a848640a5d37d50f29b6
   languageName: node
   linkType: hard
 
@@ -4308,7 +4308,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"typescript-eslint@npm:^8.56.1":
+"typescript-eslint@npm:^8.57.0":
   version: 8.57.0
   resolution: "typescript-eslint@npm:8.57.0"
   dependencies:
@@ -4540,7 +4540,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"vitest@npm:^4.0.18":
+"vitest@npm:^4.1.0":
   version: 4.1.0
   resolution: "vitest@npm:4.1.0"
   dependencies:

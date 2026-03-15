@@ -1,7 +1,7 @@
 # cisco-axl-mcp
 
 [![CI](https://github.com/calltelemetry/cisco-axl-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/calltelemetry/cisco-axl-mcp/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/calltelemetry/cisco-axl-mcp/graph/badge.svg)](https://codecov.io/gh/calltelemetry/cisco-axl-mcp)
+[![codecov](https://codecov.io/gh/calltelemetry/cisco-axl-mcp/graph/badge.svg?token=6CFM37EMBS)](https://codecov.io/gh/calltelemetry/cisco-axl-mcp)
 [![npm](https://img.shields.io/npm/v/@calltelemetry/cisco-axl-mcp)](https://www.npmjs.com/package/@calltelemetry/cisco-axl-mcp)
 
 Built by [Call Telemetry](https://calltelemetry.com) — realtime tools for Cisco Collaboration.

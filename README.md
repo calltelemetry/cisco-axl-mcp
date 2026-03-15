@@ -6,14 +6,6 @@
 
 Built by [Call Telemetry](https://calltelemetry.com) — realtime tools for Cisco Collaboration.
 
-## Related Cisco MCP Servers
-
-| Server | Description |
-|--------|-------------|
-| **[cisco-axl-mcp](https://github.com/calltelemetry/cisco-axl-mcp)** | CUCM provisioning and admin via AXL SOAP API (this repo) |
-| **[cisco-phone-mcp](https://github.com/calltelemetry/cisco-phone-mcp)** | Direct IP phone control — dial, screenshot, RTP stats |
-| **[cisco-cucm-mcp](https://github.com/calltelemetry/cisco-cucm-mcp)** | CUCM operational debugging — logs, performance, packet capture, service control |
-
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
 **You describe the task in plain language. The LLM figures out the AXL operations.**
@@ -31,6 +23,14 @@ Instead of hand-crafting XML payloads, you say things like:
 - *"Enable Built-in Bridge on every phone in the Sales CSS"*
 
 The LLM uses the tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
+
+## Related Cisco MCP Servers
+
+| Server | Description |
+|--------|-------------|
+| **[cisco-axl-mcp](https://github.com/calltelemetry/cisco-axl-mcp)** | CUCM provisioning and admin via AXL SOAP API (this repo) |
+| **[cisco-phone-mcp](https://github.com/calltelemetry/cisco-phone-mcp)** | Direct IP phone control — dial, screenshot, RTP stats |
+| **[cisco-cucm-mcp](https://github.com/calltelemetry/cisco-cucm-mcp)** | CUCM operational debugging — logs, performance, packet capture, service control |
 
 ## What It Does
 

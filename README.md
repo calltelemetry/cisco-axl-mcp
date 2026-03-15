@@ -6,6 +6,14 @@
 
 Built by [Call Telemetry](https://calltelemetry.com) — realtime tools for Cisco Collaboration.
 
+## Related Cisco MCP Servers
+
+| Server | Description |
+|--------|-------------|
+| **[cisco-axl-mcp](https://github.com/calltelemetry/cisco-axl-mcp)** | CUCM provisioning and admin via AXL SOAP API (this repo) |
+| **[cisco-phone-mcp](https://github.com/calltelemetry/cisco-phone-mcp)** | Direct IP phone control — dial, screenshot, RTP stats |
+| **[cisco-cucm-mcp](https://github.com/calltelemetry/cisco-cucm-mcp)** | CUCM operational debugging — logs, performance, packet capture, service control |
+
 An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to Cisco Unified Communications Manager (CUCM) via the AXL SOAP API.
 
 **You describe the task in plain language. The LLM figures out the AXL operations.**

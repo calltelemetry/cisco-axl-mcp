@@ -209,6 +209,48 @@ describe('axl_execute edge cases', () => {
     ).rejects.toThrow('targets "Phone" which is not enabled');
   });
 
+  it('autoPage delegates to listAll for list operations', async () => {
+    const api: AxlAPIService = {
+      executeOperation: async () => ({ ok: true }),
+      listAll: async () => ({ rows: [{ name: 'a' }, { name: 'b' }], totalFetched: 2, pages: 1, truncated: false }),
+    } as unknown as AxlAPIService;
+
+    const result = await handleTool(
+      'axl_execute',
+      {
+        cucm_host: 'test.local',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+        operation: 'listPhone',
+        data: { searchCriteria: { name: '%' } },
+        autoPage: true,
+      },
+      api
+    );
+    const data = parseResult(result);
+    expect(data.totalFetched).toBe(2);
+    expect(data.rows).toHaveLength(2);
+  });
+
+  it('autoPage throws for non-list operations', async () => {
+    await expect(
+      handleTool(
+        'axl_execute',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+          operation: 'getPhone',
+          data: { name: 'SEP001122334455' },
+          autoPage: true,
+        },
+        mockApi
+      )
+    ).rejects.toThrow('autoPage is only valid for list operations');
+  });
+
   it('converts executeOperation errors via toMcpError', async () => {
     const failingApi: AxlAPIService = {
       executeOperation: async () => {
@@ -249,5 +291,121 @@ describe('axl_execute edge cases', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.data).toEqual({});
+  });
+});
+
+describe('axl_sql_query', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.AXL_MCP_ENABLE_SQL;
+    delete process.env.AXL_MCP_CONFIG;
+    process.argv = ['node', 'script.js'];
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('executes SQL query via executeSQLQuery', async () => {
+    const { api, calls } = createCapturingMock();
+
+    await handleTool(
+      'axl_sql_query',
+      {
+        cucm_host: 'test.local',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+        sql: 'SELECT name FROM device',
+      },
+      api
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.operation).toBe('executeSQLQuery');
+    expect(calls[0]!.data).toEqual({ sql: 'SELECT name FROM device' });
+  });
+
+  it('throws when sql parameter is missing', async () => {
+    await expect(
+      handleTool(
+        'axl_sql_query',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+        },
+        mockApi
+      )
+    ).rejects.toThrow('Missing or invalid "sql"');
+  });
+
+  it('throws when SQL is disabled', async () => {
+    process.env.AXL_MCP_ENABLE_SQL = 'false';
+    await expect(
+      handleTool(
+        'axl_sql_query',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+          sql: 'SELECT 1',
+        },
+        mockApi
+      )
+    ).rejects.toThrow('SQL operations are disabled');
+  });
+});
+
+describe('axl_sql_update', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.AXL_MCP_ENABLE_SQL;
+    delete process.env.AXL_MCP_CONFIG;
+    process.argv = ['node', 'script.js'];
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('executes SQL update via executeSQLUpdate', async () => {
+    const { api, calls } = createCapturingMock();
+
+    await handleTool(
+      'axl_sql_update',
+      {
+        cucm_host: 'test.local',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+        sql: 'UPDATE device SET description = "test" WHERE name = "SEP001122334455"',
+      },
+      api
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.operation).toBe('executeSQLUpdate');
+  });
+
+  it('throws when SQL is disabled', async () => {
+    process.env.AXL_MCP_ENABLE_SQL = 'false';
+    await expect(
+      handleTool(
+        'axl_sql_update',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+          sql: 'DELETE FROM device WHERE name = "test"',
+        },
+        mockApi
+      )
+    ).rejects.toThrow('SQL operations are disabled');
   });
 });

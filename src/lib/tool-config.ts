@@ -27,6 +27,24 @@ function normalizeObjectKey(value: string): string {
   return value.trim();
 }
 
+export function isSqlEnabled(): boolean {
+  const envVal = process.env.AXL_MCP_ENABLE_SQL;
+  if (envVal !== undefined) return envVal.toLowerCase() !== 'false' && envVal !== '0';
+
+  const configJson = process.env.AXL_MCP_CONFIG;
+  if (configJson) {
+    try {
+      const config = JSON.parse(configJson) as AxlMcpConfig & { enable_sql?: boolean; enableSql?: boolean };
+      const val = config.enable_sql ?? config.enableSql;
+      if (val !== undefined) return val !== false;
+    } catch {
+      // Handled in getEnabledTopLevelObjects
+    }
+  }
+
+  return true; // Enabled by default
+}
+
 export function getEnabledTopLevelObjects(): Set<AxlTopLevelObject> | null {
   const configJson = process.env.AXL_MCP_CONFIG;
   let config: AxlMcpConfig | undefined;

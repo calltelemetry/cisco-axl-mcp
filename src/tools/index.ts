@@ -3,7 +3,7 @@ import type { AxlAPIService } from '../services/axl/index';
 import type { ToolDefinition } from './types';
 import { jsonResponse } from './types';
 import { resolveCredentials } from '../lib/credential-resolver';
-import { getEnabledTopLevelObjects } from '../lib/tool-config';
+import { getEnabledTopLevelObjects, isSqlEnabled } from '../lib/tool-config';
 import { toMcpError } from '../types/axl/errors';
 import { assertRecord, extractCredentialOverrides, optionalObject, requireString } from '../types/axl/guards';
 import {
@@ -81,6 +81,10 @@ export const tools: ToolDefinition[] = [
           type: 'object',
           description: 'Optional executeOperation options (clean/removeAttributes/etc).',
         },
+        autoPage: {
+          type: 'boolean',
+          description: 'Auto-paginate list operations. Fetches all pages and returns combined results. Max 10,000 rows. Only valid for list* operations.',
+        },
       },
       required: ['operation', 'data'],
     },
@@ -137,6 +141,50 @@ export const tools: ToolDefinition[] = [
         },
       },
       required: ['operationName'],
+    },
+  },
+  {
+    name: 'axl_sql_query',
+    description: 'Execute a read-only SQL query against the CUCM Informix database via AXL executeSQLQuery',
+    annotations: {
+      title: 'AXL SQL Query',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cucm_host: { type: 'string' },
+        cucm_username: { type: 'string' },
+        cucm_password: { type: 'string' },
+        cucm_version: { type: 'string' },
+        sql: { type: 'string', description: 'SQL SELECT query to execute against the CUCM Informix database' },
+      },
+      required: ['sql'],
+    },
+  },
+  {
+    name: 'axl_sql_update',
+    description: 'Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database via AXL executeSQLUpdate',
+    annotations: {
+      title: 'AXL SQL Update',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cucm_host: { type: 'string' },
+        cucm_username: { type: 'string' },
+        cucm_password: { type: 'string' },
+        cucm_version: { type: 'string' },
+        sql: { type: 'string', description: 'SQL INSERT, UPDATE, or DELETE statement to execute against the CUCM Informix database' },
+      },
+      required: ['sql'],
     },
   },
 ];
@@ -230,7 +278,33 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
           }
         }
 
+        // Auto-pagination for list operations
+        if (obj.autoPage === true) {
+          if (!operation.startsWith('list')) {
+            throw new McpError(ErrorCode.InvalidParams, `autoPage is only valid for list operations, got "${operation}"`);
+          }
+          return jsonResponse(await axlAPI.listAll(credentials, operation, tags as Record<string, unknown>, opts));
+        }
+
         return jsonResponse(await axlAPI.executeOperation(credentials, operation, tags, opts));
+      }
+      case 'axl_sql_query': {
+        if (!isSqlEnabled()) {
+          throw new McpError(ErrorCode.InvalidParams, 'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)');
+        }
+        const obj = assertRecord(args);
+        const credentials = resolveCredentials(extractCredentialOverrides(obj));
+        const sql = requireString(obj, 'sql');
+        return jsonResponse(await axlAPI.executeOperation(credentials, 'executeSQLQuery', { sql }));
+      }
+      case 'axl_sql_update': {
+        if (!isSqlEnabled()) {
+          throw new McpError(ErrorCode.InvalidParams, 'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)');
+        }
+        const obj = assertRecord(args);
+        const credentials = resolveCredentials(extractCredentialOverrides(obj));
+        const sql = requireString(obj, 'sql');
+        return jsonResponse(await axlAPI.executeOperation(credentials, 'executeSQLUpdate', { sql }));
       }
       default:
         return null;

@@ -20,7 +20,7 @@ An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direc
 
 The MCP server ships with pre-parsed schemas from Cisco's official AXL WSDL for every supported CUCM version (11.0, 11.5, 12.0, 12.5, 14.0, 15.0). When you set `CUCM_VERSION`, it loads the schema for **your exact version** — so the LLM only sees object types, operations, fields, and enums that actually exist on your CallManager. No guessing, no hallucinated field names, no version mismatches.
 
-Four composable tools give the LLM progressive disclosure of this schema — 232 object types, 800+ operations, thousands of fields — so it can discover what's available, inspect required fields, and shape correct SOAP requests on your behalf. No AXL expertise required.
+Six composable tools give the LLM progressive disclosure of this schema — 232 object types, 800+ operations, thousands of fields — plus direct SQL access to the CUCM Informix database. The server handles auto-pagination for large result sets, retries with exponential backoff on transient failures, and maintains a per-cluster JSONL audit trail of every AXL call.
 
 Instead of hand-crafting XML payloads, you say things like:
 
@@ -30,18 +30,25 @@ Instead of hand-crafting XML payloads, you say things like:
 - *"Set up a hunt group for the support team with round-robin distribution"*
 - *"Enable Built-in Bridge on every phone in the Sales CSS"*
 
-The LLM uses the four tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
+The LLM uses the tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
 
 ## What It Does
 
-Exposes four composable tools that let an LLM discover, inspect, and execute CUCM operations — phones, users, line groups, hunt lists, and any other AXL-managed object:
+Exposes six composable tools that let an LLM discover, inspect, and execute CUCM operations — phones, users, line groups, hunt lists, SQL queries, and any other AXL-managed object:
 
 | Tool | Description |
 |------|-------------|
-| `axl_execute` | Execute any AXL SOAP operation (add, get, list, update, remove) |
+| `axl_execute` | Execute any AXL SOAP operation (add, get, list, update, remove). Supports `autoPage` for automatic pagination of list results |
 | `axl_describe_operation` | Describe required fields, types, and enums for an operation |
 | `axl_list_objects` | Discover available CUCM object types |
 | `axl_list_operations` | List CRUD operations for a specific object type |
+| `axl_sql_query` | Execute a read-only SQL SELECT against the CUCM Informix database |
+| `axl_sql_update` | Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database |
+
+**Built-in resilience:**
+- **Retry with exponential backoff** — automatically retries on 429, 503, connection errors, and AXL memory allocation errors
+- **Adaptive rate limiting** — learns from recent throttle events and proactively delays requests to avoid overloading CUCM
+- **JSONL audit trail** — every AXL call is logged per-host to `~/.cisco-axl-mcp/audit/` with timestamps, durations, and status
 
 Supports CUCM versions **11.0, 11.5, 12.0, 12.5, 14.0, and 15.0**.
 
@@ -128,6 +135,37 @@ AXL_MCP_CONFIG='{"enabled_objects": ["Phone", "User", "LineGroup"]}'
 
 When set, only the specified object types and their CRUD operations are available. Omit to allow all objects.
 
+### Resilience & Audit
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `AXL_MCP_MAX_RETRIES` | `3` | Max retry attempts on transient failures |
+| `AXL_MCP_RETRY_BASE_DELAY_MS` | `1000` | Initial backoff delay in milliseconds |
+| `AXL_MCP_ENABLE_SQL` | `true` | Enable SQL tools (`false` to disable) |
+| `AXL_MCP_MAX_AUTOPAGINATE` | `10000` | Max rows returned by `autoPage` |
+| `AXL_MCP_AUDIT_LOG` | `request` | Audit log detail level (see below) |
+| `AXL_MCP_AUDIT_MAX_SIZE_MB` | `10` | Audit log rotation threshold per host |
+
+### Audit Log
+
+Every AXL call is logged per-host to `~/.cisco-axl-mcp/audit/<host>.jsonl`. The `AXL_MCP_AUDIT_LOG` variable controls what gets logged:
+
+| Level | Request Payload | Response Payload | Description |
+|-------|:-:|:-:|-------------|
+| `off` | | | No audit logging |
+| `metadata` | | | Operation, status, duration, rows only |
+| `request` (default) | **yes** | | Metadata + request payload with credentials redacted |
+| `full` | **yes** | **yes** | Metadata + request + full response payload |
+
+Credentials (`cucm_password`, `cucm_username`, `cucm_host`, `password`, `username`, `host`) are automatically redacted from request payloads at all log levels.
+
+```jsonl
+{"ts":"2026-03-14T15:30:00.000Z","operation":"listPhone","durationMs":342,"status":"ok","rows":50,"request":{"searchCriteria":{"name":"SEP%"}}}
+{"ts":"2026-03-14T15:30:01.000Z","operation":"executeSQLQuery","durationMs":1200,"status":"throttled","error":"Maximum AXL Memory Allocation Consumed","request":{"sql":"SELECT name FROM device"}}
+```
+
+When recent throttle events are detected, the server automatically adds a proactive delay before subsequent requests to avoid overloading CUCM.
+
 ## Tools
 
 ### `axl_execute`
@@ -142,6 +180,7 @@ Execute any AXL operation by name.
 | `data` | Yes | AXL request payload — the JSON body sent as the SOAP request |
 | `returnedTags` | No | List of field names to return. Supports dot notation for nested fields, e.g. `["name", "model", "lines.line.dirn.pattern"]` |
 | `opts` | No | Options: `{ clean, removeAttributes, dataContainerIdentifierTails }` |
+| `autoPage` | No | When `true`, automatically paginates list operations and returns all results (max 10,000 rows). Only valid for `list*` operations |
 | `cucm_host` | No | Override default CUCM host |
 | `cucm_username` | No | Override default username |
 | `cucm_password` | No | Override default password |
@@ -188,6 +227,44 @@ Returns the CRUD operations available for a specific object type.
 | `objectName` | Yes | Object type name (e.g. `Phone`, `User`, `LineGroup`) |
 
 **Returns:** `{ wsdlVersion, objectName, operations: { add, get, list, update, remove } }`
+
+### `axl_sql_query`
+
+Execute a read-only SQL SELECT against the CUCM Informix database via AXL's `executeSQLQuery`.
+
+**Parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `sql` | Yes | SQL SELECT query |
+| `cucm_host` | No | Override default CUCM host |
+| `cucm_username` | No | Override default username |
+| `cucm_password` | No | Override default password |
+| `cucm_version` | No | Override default version |
+
+**Example:**
+
+```json
+{
+  "sql": "SELECT d.name, d.description, n.dnorpattern FROM device d JOIN numplan n ON d.fknumplan = n.pkid WHERE d.tkclass = 1"
+}
+```
+
+### `axl_sql_update`
+
+Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database via AXL's `executeSQLUpdate`.
+
+**Parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `sql` | Yes | SQL INSERT, UPDATE, or DELETE statement |
+| `cucm_host` | No | Override default CUCM host |
+| `cucm_username` | No | Override default username |
+| `cucm_password` | No | Override default password |
+| `cucm_version` | No | Override default version |
+
+> **Note:** SQL tools can be disabled by setting `AXL_MCP_ENABLE_SQL=false`.
 
 ## How `returnedTags` Works
 
@@ -247,9 +324,10 @@ axl_list_objects          → what object types exist? (Phone, User, LineGroup, 
 axl_list_operations       → what operations exist for Phone? (addPhone, getPhone, ...)
 axl_describe_operation    → what fields does addPhone require?
 axl_execute               → call addPhone with the correct payload
+axl_sql_query             → run SQL directly against the CUCM Informix database
 ```
 
-Fields marked `required: true` must be included. Fields with `enum` or `enumType` constrain valid values. See the [Examples](#examples--llm-conversations-real-cucm-15-output) section below for full interactive walkthroughs.
+Fields marked `required: true` must be included. Fields with `enum` or `enumType` constrain valid values. For complex queries that don't map well to AXL CRUD operations, use `axl_sql_query` to query the database directly. See the [Examples](#examples--llm-conversations-real-cucm-15-output) section below for full interactive walkthroughs.
 
 ## Examples — LLM Conversations (Real CUCM 15 Output)
 

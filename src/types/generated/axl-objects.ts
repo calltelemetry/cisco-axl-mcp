@@ -8,8 +8,10 @@ export const AXL_TOP_LEVEL_OBJECTS = ["AarGroup","AarGroupMatrix","AdvertisedPat
 export type AxlTopLevelObject = (typeof AXL_TOP_LEVEL_OBJECTS)[number];
 
 export type CrudVerb = 'add' | 'get' | 'list' | 'update' | 'remove';
+export type ActionVerbPrefix = 'apply' | 'do' | 'reset' | 'restart' | 'lock' | 'wipe' | 'assign' | 'unassign';
 
-export const AXL_OBJECT_OPERATIONS = {
+/** Maps each top-level AXL object to its available operations by verb (CRUD + action verbs where applicable). */
+export const AXL_OBJECT_OPERATIONS: Record<string, Record<string, string>> = {
   "AarGroup": {
     "add": "addAarGroup",
     "get": "getAarGroup",
@@ -102,7 +104,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getCallManagerGroup",
     "list": "listCallManagerGroup",
     "remove": "removeCallManagerGroup",
-    "update": "updateCallManagerGroup"
+    "update": "updateCallManagerGroup",
+    "apply": "applyCallManagerGroup",
+    "reset": "resetCallManagerGroup"
   },
   "CallPark": {
     "add": "addCallPark",
@@ -176,28 +180,40 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getCiscoCatalyst600024PortFXSGateway",
     "list": "listCiscoCatalyst600024PortFXSGateway",
     "remove": "removeCiscoCatalyst600024PortFXSGateway",
-    "update": "updateCiscoCatalyst600024PortFXSGateway"
+    "update": "updateCiscoCatalyst600024PortFXSGateway",
+    "apply": "applyCiscoCatalyst600024PortFXSGateway",
+    "reset": "resetCiscoCatalyst600024PortFXSGateway",
+    "restart": "restartCiscoCatalyst600024PortFXSGateway"
   },
   "CiscoCatalyst6000E1VoIPGateway": {
     "add": "addCiscoCatalyst6000E1VoIPGateway",
     "get": "getCiscoCatalyst6000E1VoIPGateway",
     "list": "listCiscoCatalyst6000E1VoIPGateway",
     "remove": "removeCiscoCatalyst6000E1VoIPGateway",
-    "update": "updateCiscoCatalyst6000E1VoIPGateway"
+    "update": "updateCiscoCatalyst6000E1VoIPGateway",
+    "apply": "applyCiscoCatalyst6000E1VoIPGateway",
+    "reset": "resetCiscoCatalyst6000E1VoIPGateway",
+    "restart": "restartCiscoCatalyst6000E1VoIPGateway"
   },
   "CiscoCatalyst6000T1VoIPGatewayPri": {
     "add": "addCiscoCatalyst6000T1VoIPGatewayPri",
     "get": "getCiscoCatalyst6000T1VoIPGatewayPri",
     "list": "listCiscoCatalyst6000T1VoIPGatewayPri",
     "remove": "removeCiscoCatalyst6000T1VoIPGatewayPri",
-    "update": "updateCiscoCatalyst6000T1VoIPGatewayPri"
+    "update": "updateCiscoCatalyst6000T1VoIPGatewayPri",
+    "apply": "applyCiscoCatalyst6000T1VoIPGatewayPri",
+    "reset": "resetCiscoCatalyst6000T1VoIPGatewayPri",
+    "restart": "restartCiscoCatalyst6000T1VoIPGatewayPri"
   },
   "CiscoCatalyst6000T1VoIPGatewayT1": {
     "add": "addCiscoCatalyst6000T1VoIPGatewayT1",
     "get": "getCiscoCatalyst6000T1VoIPGatewayT1",
     "list": "listCiscoCatalyst6000T1VoIPGatewayT1",
     "remove": "removeCiscoCatalyst6000T1VoIPGatewayT1",
-    "update": "updateCiscoCatalyst6000T1VoIPGatewayT1"
+    "update": "updateCiscoCatalyst6000T1VoIPGatewayT1",
+    "apply": "applyCiscoCatalyst6000T1VoIPGatewayT1",
+    "reset": "resetCiscoCatalyst6000T1VoIPGatewayT1",
+    "restart": "restartCiscoCatalyst6000T1VoIPGatewayT1"
   },
   "CmcInfo": {
     "add": "addCmcInfo",
@@ -211,21 +227,28 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getCommonDeviceConfig",
     "list": "listCommonDeviceConfig",
     "remove": "removeCommonDeviceConfig",
-    "update": "updateCommonDeviceConfig"
+    "update": "updateCommonDeviceConfig",
+    "apply": "applyCommonDeviceConfig",
+    "reset": "resetCommonDeviceConfig"
   },
   "CommonPhoneConfig": {
     "add": "addCommonPhoneConfig",
     "get": "getCommonPhoneConfig",
     "list": "listCommonPhoneConfig",
     "remove": "removeCommonPhoneConfig",
-    "update": "updateCommonPhoneConfig"
+    "update": "updateCommonPhoneConfig",
+    "apply": "applyCommonPhoneConfig",
+    "reset": "resetCommonPhoneConfig"
   },
   "ConferenceBridge": {
     "add": "addConferenceBridge",
     "get": "getConferenceBridge",
     "list": "listConferenceBridge",
     "remove": "removeConferenceBridge",
-    "update": "updateConferenceBridge"
+    "update": "updateConferenceBridge",
+    "apply": "applyConferenceBridge",
+    "reset": "resetConferenceBridge",
+    "restart": "restartConferenceBridge"
   },
   "ConferenceNow": {
     "add": "addConferenceNow",
@@ -253,7 +276,10 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getCtiRoutePoint",
     "list": "listCtiRoutePoint",
     "remove": "removeCtiRoutePoint",
-    "update": "updateCtiRoutePoint"
+    "update": "updateCtiRoutePoint",
+    "apply": "applyCtiRoutePoint",
+    "reset": "resetCtiRoutePoint",
+    "restart": "restartCtiRoutePoint"
   },
   "CumaServerSecurityProfile": {
     "add": "addCumaServerSecurityProfile",
@@ -281,7 +307,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getDateTimeGroup",
     "list": "listDateTimeGroup",
     "remove": "removeDateTimeGroup",
-    "update": "updateDateTimeGroup"
+    "update": "updateDateTimeGroup",
+    "apply": "applyDateTimeGroup",
+    "reset": "resetDateTimeGroup"
   },
   "DefaultDeviceProfile": {
     "add": "addDefaultDeviceProfile",
@@ -309,7 +337,10 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getDevicePool",
     "list": "listDevicePool",
     "remove": "removeDevicePool",
-    "update": "updateDevicePool"
+    "update": "updateDevicePool",
+    "apply": "applyDevicePool",
+    "reset": "resetDevicePool",
+    "restart": "restartDevicePool"
   },
   "DeviceProfile": {
     "add": "addDeviceProfile",
@@ -344,7 +375,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getDirectedCallPark",
     "list": "listDirectedCallPark",
     "remove": "removeDirectedCallPark",
-    "update": "updateDirectedCallPark"
+    "update": "updateDirectedCallPark",
+    "apply": "applyDirectedCallPark",
+    "reset": "resetDirectedCallPark"
   },
   "DirectoryLookupDialRules": {
     "add": "addDirectoryLookupDialRules",
@@ -421,14 +454,20 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getGatekeeper",
     "list": "listGatekeeper",
     "remove": "removeGatekeeper",
-    "update": "updateGatekeeper"
+    "update": "updateGatekeeper",
+    "apply": "applyGatekeeper",
+    "reset": "resetGatekeeper",
+    "restart": "restartGatekeeper"
   },
   "Gateway": {
     "add": "addGateway",
     "get": "getGateway",
     "list": "listGateway",
     "remove": "removeGateway",
-    "update": "updateGateway"
+    "update": "updateGateway",
+    "apply": "applyGateway",
+    "reset": "resetGateway",
+    "restart": "restartGateway"
   },
   "GatewayEndpointAnalogAccess": {
     "add": "addGatewayEndpointAnalogAccess",
@@ -490,21 +529,29 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getH323Gateway",
     "list": "listH323Gateway",
     "remove": "removeH323Gateway",
-    "update": "updateH323Gateway"
+    "update": "updateH323Gateway",
+    "apply": "applyH323Gateway",
+    "reset": "resetH323Gateway",
+    "restart": "restartH323Gateway"
   },
   "H323Phone": {
     "add": "addH323Phone",
     "get": "getH323Phone",
     "list": "listH323Phone",
     "remove": "removeH323Phone",
-    "update": "updateH323Phone"
+    "update": "updateH323Phone",
+    "apply": "applyH323Phone",
+    "reset": "resetH323Phone",
+    "restart": "restartH323Phone"
   },
   "H323Trunk": {
     "add": "addH323Trunk",
     "get": "getH323Trunk",
     "list": "listH323Trunk",
     "remove": "removeH323Trunk",
-    "update": "updateH323Trunk"
+    "update": "updateH323Trunk",
+    "reset": "resetH323Trunk",
+    "restart": "restartH323Trunk"
   },
   "HandoffConfiguration": {
     "add": "addHandoffConfiguration",
@@ -523,7 +570,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getHuntList",
     "list": "listHuntList",
     "remove": "removeHuntList",
-    "update": "updateHuntList"
+    "update": "updateHuntList",
+    "apply": "applyHuntList",
+    "reset": "resetHuntList"
   },
   "HuntPilot": {
     "add": "addHuntPilot",
@@ -670,7 +719,10 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getLine",
     "list": "listLine",
     "remove": "removeLine",
-    "update": "updateLine"
+    "update": "updateLine",
+    "apply": "applyLine",
+    "reset": "resetLine",
+    "restart": "restartLine"
   },
   "LineGroup": {
     "add": "addLineGroup",
@@ -758,7 +810,10 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getMtp",
     "list": "listMtp",
     "remove": "removeMtp",
-    "update": "updateMtp"
+    "update": "updateMtp",
+    "apply": "applyMtp",
+    "reset": "resetMtp",
+    "restart": "restartMtp"
   },
   "NetworkAccessProfile": {
     "add": "addNetworkAccessProfile",
@@ -772,7 +827,12 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getPhone",
     "list": "listPhone",
     "remove": "removePhone",
-    "update": "updatePhone"
+    "update": "updatePhone",
+    "apply": "applyPhone",
+    "lock": "lockPhone",
+    "reset": "resetPhone",
+    "restart": "restartPhone",
+    "wipe": "wipePhone"
   },
   "PhoneActivationCode": {
     "add": "addPhoneActivationCode",
@@ -784,7 +844,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getPhoneButtonTemplate",
     "list": "listPhoneButtonTemplate",
     "remove": "removePhoneButtonTemplate",
-    "update": "updatePhoneButtonTemplate"
+    "update": "updatePhoneButtonTemplate",
+    "apply": "applyPhoneButtonTemplate",
+    "restart": "restartPhoneButtonTemplate"
   },
   "PhoneNtp": {
     "add": "addPhoneNtp",
@@ -798,7 +860,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getPhoneSecurityProfile",
     "list": "listPhoneSecurityProfile",
     "remove": "removePhoneSecurityProfile",
-    "update": "updatePhoneSecurityProfile"
+    "update": "updatePhoneSecurityProfile",
+    "apply": "applyPhoneSecurityProfile",
+    "reset": "resetPhoneSecurityProfile"
   },
   "PhysicalLocation": {
     "add": "addPhysicalLocation",
@@ -840,7 +904,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getRegion",
     "list": "listRegion",
     "remove": "removeRegion",
-    "update": "updateRegion"
+    "update": "updateRegion",
+    "apply": "applyRegion",
+    "restart": "restartRegion"
   },
   "RemoteCluster": {
     "add": "addRemoteCluster",
@@ -868,14 +934,20 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getResourcePriorityNamespace",
     "list": "listResourcePriorityNamespace",
     "remove": "removeResourcePriorityNamespace",
-    "update": "updateResourcePriorityNamespace"
+    "update": "updateResourcePriorityNamespace",
+    "apply": "applyResourcePriorityNamespace",
+    "reset": "resetResourcePriorityNamespace",
+    "restart": "restartResourcePriorityNamespace"
   },
   "ResourcePriorityNamespaceList": {
     "add": "addResourcePriorityNamespaceList",
     "get": "getResourcePriorityNamespaceList",
     "list": "listResourcePriorityNamespaceList",
     "remove": "removeResourcePriorityNamespaceList",
-    "update": "updateResourcePriorityNamespaceList"
+    "update": "updateResourcePriorityNamespaceList",
+    "apply": "applyResourcePriorityNamespaceList",
+    "reset": "resetResourcePriorityNamespaceList",
+    "restart": "restartResourcePriorityNamespaceList"
   },
   "RouteFilter": {
     "add": "addRouteFilter",
@@ -896,14 +968,18 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getRouteList",
     "list": "listRouteList",
     "remove": "removeRouteList",
-    "update": "updateRouteList"
+    "update": "updateRouteList",
+    "apply": "applyRouteList",
+    "reset": "resetRouteList"
   },
   "RoutePartition": {
     "add": "addRoutePartition",
     "get": "getRoutePartition",
     "list": "listRoutePartition",
     "remove": "removeRoutePartition",
-    "update": "updateRoutePartition"
+    "update": "updateRoutePartition",
+    "apply": "applyRoutePartition",
+    "restart": "restartRoutePartition"
   },
   "RoutePattern": {
     "add": "addRoutePattern",
@@ -978,7 +1054,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getSipProfile",
     "list": "listSipProfile",
     "remove": "removeSipProfile",
-    "update": "updateSipProfile"
+    "update": "updateSipProfile",
+    "apply": "applySipProfile",
+    "restart": "restartSipProfile"
   },
   "SipRealm": {
     "add": "addSipRealm",
@@ -999,28 +1077,37 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getSipTrunk",
     "list": "listSipTrunk",
     "remove": "removeSipTrunk",
-    "update": "updateSipTrunk"
+    "update": "updateSipTrunk",
+    "reset": "resetSipTrunk",
+    "restart": "restartSipTrunk"
   },
   "SipTrunkSecurityProfile": {
     "add": "addSipTrunkSecurityProfile",
     "get": "getSipTrunkSecurityProfile",
     "list": "listSipTrunkSecurityProfile",
     "remove": "removeSipTrunkSecurityProfile",
-    "update": "updateSipTrunkSecurityProfile"
+    "update": "updateSipTrunkSecurityProfile",
+    "apply": "applySipTrunkSecurityProfile",
+    "reset": "resetSipTrunkSecurityProfile"
   },
   "SoftKeyTemplate": {
     "add": "addSoftKeyTemplate",
     "get": "getSoftKeyTemplate",
     "list": "listSoftKeyTemplate",
     "remove": "removeSoftKeyTemplate",
-    "update": "updateSoftKeyTemplate"
+    "update": "updateSoftKeyTemplate",
+    "apply": "applySoftKeyTemplate",
+    "restart": "restartSoftKeyTemplate"
   },
   "Srst": {
     "add": "addSrst",
     "get": "getSrst",
     "list": "listSrst",
     "remove": "removeSrst",
-    "update": "updateSrst"
+    "update": "updateSrst",
+    "apply": "applySrst",
+    "reset": "resetSrst",
+    "restart": "restartSrst"
   },
   "TimePeriod": {
     "add": "addTimePeriod",
@@ -1055,7 +1142,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getTranscoder",
     "list": "listTranscoder",
     "remove": "removeTranscoder",
-    "update": "updateTranscoder"
+    "update": "updateTranscoder",
+    "apply": "applyTranscoder",
+    "reset": "resetTranscoder"
   },
   "TransformationProfile": {
     "add": "addTransformationProfile",
@@ -1069,7 +1158,10 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getUcService",
     "list": "listUcService",
     "remove": "removeUcService",
-    "update": "updateUcService"
+    "update": "updateUcService",
+    "apply": "applyUcService",
+    "reset": "resetUcService",
+    "restart": "restartUcService"
   },
   "UnitsToGateway": {
     "add": "addUnitsToGateway",
@@ -1117,7 +1209,9 @@ export const AXL_OBJECT_OPERATIONS = {
     "add": "addVg224",
     "get": "getVg224",
     "remove": "removeVg224",
-    "update": "updateVg224"
+    "update": "updateVg224",
+    "reset": "resetVg224",
+    "restart": "restartVg224"
   },
   "VohServer": {
     "add": "addVohServer",
@@ -1138,14 +1232,20 @@ export const AXL_OBJECT_OPERATIONS = {
     "get": "getVoiceMailPort",
     "list": "listVoiceMailPort",
     "remove": "removeVoiceMailPort",
-    "update": "updateVoiceMailPort"
+    "update": "updateVoiceMailPort",
+    "apply": "applyVoiceMailPort",
+    "reset": "resetVoiceMailPort",
+    "restart": "restartVoiceMailPort"
   },
   "VoiceMailProfile": {
     "add": "addVoiceMailProfile",
     "get": "getVoiceMailProfile",
     "list": "listVoiceMailProfile",
     "remove": "removeVoiceMailProfile",
-    "update": "updateVoiceMailProfile"
+    "update": "updateVoiceMailProfile",
+    "apply": "applyVoiceMailProfile",
+    "reset": "resetVoiceMailProfile",
+    "restart": "restartVoiceMailProfile"
   },
   "VpnGateway": {
     "add": "addVpnGateway",
@@ -1207,7 +1307,10 @@ export const AXL_OBJECT_OPERATIONS = {
   "CallManager": {
     "get": "getCallManager",
     "list": "listCallManager",
-    "update": "updateCallManager"
+    "update": "updateCallManager",
+    "apply": "applyCallManager",
+    "reset": "resetCallManager",
+    "restart": "restartCallManager"
   },
   "CcdFeatureConfig": {
     "get": "getCcdFeatureConfig",
@@ -1416,4 +1519,500 @@ export const AXL_OBJECT_OPERATIONS = {
   "SelfProvisioning": {
     "update": "updateSelfProvisioning"
   }
-} as const;
+};
+
+/** All non-CRUD action operations, keyed by operation name. */
+export const AXL_ACTION_OPERATIONS: Record<string, { verb: ActionVerbPrefix; object: string | null }> = {
+  "applyCallManager": {
+    "verb": "apply",
+    "object": "CallManager"
+  },
+  "applyCallManagerGroup": {
+    "verb": "apply",
+    "object": "CallManagerGroup"
+  },
+  "applyCiscoCatalyst600024PortFXSGateway": {
+    "verb": "apply",
+    "object": "CiscoCatalyst600024PortFXSGateway"
+  },
+  "applyCiscoCatalyst6000E1VoIPGateway": {
+    "verb": "apply",
+    "object": "CiscoCatalyst6000E1VoIPGateway"
+  },
+  "applyCiscoCatalyst6000T1VoIPGatewayPri": {
+    "verb": "apply",
+    "object": "CiscoCatalyst6000T1VoIPGatewayPri"
+  },
+  "applyCiscoCatalyst6000T1VoIPGatewayT1": {
+    "verb": "apply",
+    "object": "CiscoCatalyst6000T1VoIPGatewayT1"
+  },
+  "applyCommonDeviceConfig": {
+    "verb": "apply",
+    "object": "CommonDeviceConfig"
+  },
+  "applyCommonPhoneConfig": {
+    "verb": "apply",
+    "object": "CommonPhoneConfig"
+  },
+  "applyConferenceBridge": {
+    "verb": "apply",
+    "object": "ConferenceBridge"
+  },
+  "applyConfigEnterpriseParameters": {
+    "verb": "apply",
+    "object": null
+  },
+  "applyCtiRoutePoint": {
+    "verb": "apply",
+    "object": "CtiRoutePoint"
+  },
+  "applyDateTimeGroup": {
+    "verb": "apply",
+    "object": "DateTimeGroup"
+  },
+  "applyDevicePool": {
+    "verb": "apply",
+    "object": "DevicePool"
+  },
+  "applyDirectedCallPark": {
+    "verb": "apply",
+    "object": "DirectedCallPark"
+  },
+  "applyGatekeeper": {
+    "verb": "apply",
+    "object": "Gatekeeper"
+  },
+  "applyGateway": {
+    "verb": "apply",
+    "object": "Gateway"
+  },
+  "applyH323Gateway": {
+    "verb": "apply",
+    "object": "H323Gateway"
+  },
+  "applyH323Phone": {
+    "verb": "apply",
+    "object": "H323Phone"
+  },
+  "applyHuntList": {
+    "verb": "apply",
+    "object": "HuntList"
+  },
+  "applyLine": {
+    "verb": "apply",
+    "object": "Line"
+  },
+  "applyMtp": {
+    "verb": "apply",
+    "object": "Mtp"
+  },
+  "applyPhone": {
+    "verb": "apply",
+    "object": "Phone"
+  },
+  "applyPhoneButtonTemplate": {
+    "verb": "apply",
+    "object": "PhoneButtonTemplate"
+  },
+  "applyPhoneSecurityProfile": {
+    "verb": "apply",
+    "object": "PhoneSecurityProfile"
+  },
+  "applyRegion": {
+    "verb": "apply",
+    "object": "Region"
+  },
+  "applyResourcePriorityNamespace": {
+    "verb": "apply",
+    "object": "ResourcePriorityNamespace"
+  },
+  "applyResourcePriorityNamespaceList": {
+    "verb": "apply",
+    "object": "ResourcePriorityNamespaceList"
+  },
+  "applyRouteList": {
+    "verb": "apply",
+    "object": "RouteList"
+  },
+  "applyRoutePartition": {
+    "verb": "apply",
+    "object": "RoutePartition"
+  },
+  "applySipProfile": {
+    "verb": "apply",
+    "object": "SipProfile"
+  },
+  "applySipTrunkSecurityProfile": {
+    "verb": "apply",
+    "object": "SipTrunkSecurityProfile"
+  },
+  "applySoftKeyTemplate": {
+    "verb": "apply",
+    "object": "SoftKeyTemplate"
+  },
+  "applySrst": {
+    "verb": "apply",
+    "object": "Srst"
+  },
+  "applyTranscoder": {
+    "verb": "apply",
+    "object": "Transcoder"
+  },
+  "applyUcService": {
+    "verb": "apply",
+    "object": "UcService"
+  },
+  "applyVoiceMailPort": {
+    "verb": "apply",
+    "object": "VoiceMailPort"
+  },
+  "applyVoiceMailProfile": {
+    "verb": "apply",
+    "object": "VoiceMailProfile"
+  },
+  "assignPresenceUser": {
+    "verb": "assign",
+    "object": null
+  },
+  "doAuthenticateUser": {
+    "verb": "do",
+    "object": null
+  },
+  "doChangeDNDStatus": {
+    "verb": "do",
+    "object": null
+  },
+  "doDeviceLogin": {
+    "verb": "do",
+    "object": null
+  },
+  "doDeviceLogout": {
+    "verb": "do",
+    "object": null
+  },
+  "doDeviceReset": {
+    "verb": "do",
+    "object": null
+  },
+  "doEnterpriseParametersReset": {
+    "verb": "do",
+    "object": null
+  },
+  "doLdapSync": {
+    "verb": "do",
+    "object": null
+  },
+  "doServiceParametersReset": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartEntitlementRequest": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartLicenseDeRegister": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartLicenseReRegister": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartLicenseRegister": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartLicenseRenewAuthorization": {
+    "verb": "do",
+    "object": null
+  },
+  "doSmartLicenseRenewRegistration": {
+    "verb": "do",
+    "object": null
+  },
+  "doUpdateLicenseUsage": {
+    "verb": "do",
+    "object": null
+  },
+  "doUpdateRemoteCluster": {
+    "verb": "do",
+    "object": null
+  },
+  "doUpdateTransportSettings": {
+    "verb": "do",
+    "object": null
+  },
+  "lockPhone": {
+    "verb": "lock",
+    "object": "Phone"
+  },
+  "resetCallManager": {
+    "verb": "reset",
+    "object": "CallManager"
+  },
+  "resetCallManagerGroup": {
+    "verb": "reset",
+    "object": "CallManagerGroup"
+  },
+  "resetCiscoCatalyst600024PortFXSGateway": {
+    "verb": "reset",
+    "object": "CiscoCatalyst600024PortFXSGateway"
+  },
+  "resetCiscoCatalyst6000E1VoIPGateway": {
+    "verb": "reset",
+    "object": "CiscoCatalyst6000E1VoIPGateway"
+  },
+  "resetCiscoCatalyst6000T1VoIPGatewayPri": {
+    "verb": "reset",
+    "object": "CiscoCatalyst6000T1VoIPGatewayPri"
+  },
+  "resetCiscoCatalyst6000T1VoIPGatewayT1": {
+    "verb": "reset",
+    "object": "CiscoCatalyst6000T1VoIPGatewayT1"
+  },
+  "resetCommonDeviceConfig": {
+    "verb": "reset",
+    "object": "CommonDeviceConfig"
+  },
+  "resetCommonPhoneConfig": {
+    "verb": "reset",
+    "object": "CommonPhoneConfig"
+  },
+  "resetConferenceBridge": {
+    "verb": "reset",
+    "object": "ConferenceBridge"
+  },
+  "resetCtiRoutePoint": {
+    "verb": "reset",
+    "object": "CtiRoutePoint"
+  },
+  "resetDateTimeGroup": {
+    "verb": "reset",
+    "object": "DateTimeGroup"
+  },
+  "resetDevicePool": {
+    "verb": "reset",
+    "object": "DevicePool"
+  },
+  "resetDirectedCallPark": {
+    "verb": "reset",
+    "object": "DirectedCallPark"
+  },
+  "resetEnterpriseParameters": {
+    "verb": "reset",
+    "object": null
+  },
+  "resetGatekeeper": {
+    "verb": "reset",
+    "object": "Gatekeeper"
+  },
+  "resetGateway": {
+    "verb": "reset",
+    "object": "Gateway"
+  },
+  "resetH323Gateway": {
+    "verb": "reset",
+    "object": "H323Gateway"
+  },
+  "resetH323Phone": {
+    "verb": "reset",
+    "object": "H323Phone"
+  },
+  "resetH323Trunk": {
+    "verb": "reset",
+    "object": "H323Trunk"
+  },
+  "resetHuntList": {
+    "verb": "reset",
+    "object": "HuntList"
+  },
+  "resetLine": {
+    "verb": "reset",
+    "object": "Line"
+  },
+  "resetMtp": {
+    "verb": "reset",
+    "object": "Mtp"
+  },
+  "resetPhone": {
+    "verb": "reset",
+    "object": "Phone"
+  },
+  "resetPhoneSecurityProfile": {
+    "verb": "reset",
+    "object": "PhoneSecurityProfile"
+  },
+  "resetResourcePriorityNamespace": {
+    "verb": "reset",
+    "object": "ResourcePriorityNamespace"
+  },
+  "resetResourcePriorityNamespaceList": {
+    "verb": "reset",
+    "object": "ResourcePriorityNamespaceList"
+  },
+  "resetRouteList": {
+    "verb": "reset",
+    "object": "RouteList"
+  },
+  "resetSipTrunk": {
+    "verb": "reset",
+    "object": "SipTrunk"
+  },
+  "resetSipTrunkSecurityProfile": {
+    "verb": "reset",
+    "object": "SipTrunkSecurityProfile"
+  },
+  "resetSrst": {
+    "verb": "reset",
+    "object": "Srst"
+  },
+  "resetTranscoder": {
+    "verb": "reset",
+    "object": "Transcoder"
+  },
+  "resetUcService": {
+    "verb": "reset",
+    "object": "UcService"
+  },
+  "resetVg224": {
+    "verb": "reset",
+    "object": "Vg224"
+  },
+  "resetVoiceMailPort": {
+    "verb": "reset",
+    "object": "VoiceMailPort"
+  },
+  "resetVoiceMailProfile": {
+    "verb": "reset",
+    "object": "VoiceMailProfile"
+  },
+  "restartCallManager": {
+    "verb": "restart",
+    "object": "CallManager"
+  },
+  "restartCiscoCatalyst600024PortFXSGateway": {
+    "verb": "restart",
+    "object": "CiscoCatalyst600024PortFXSGateway"
+  },
+  "restartCiscoCatalyst6000E1VoIPGateway": {
+    "verb": "restart",
+    "object": "CiscoCatalyst6000E1VoIPGateway"
+  },
+  "restartCiscoCatalyst6000T1VoIPGatewayPri": {
+    "verb": "restart",
+    "object": "CiscoCatalyst6000T1VoIPGatewayPri"
+  },
+  "restartCiscoCatalyst6000T1VoIPGatewayT1": {
+    "verb": "restart",
+    "object": "CiscoCatalyst6000T1VoIPGatewayT1"
+  },
+  "restartConferenceBridge": {
+    "verb": "restart",
+    "object": "ConferenceBridge"
+  },
+  "restartCtiRoutePoint": {
+    "verb": "restart",
+    "object": "CtiRoutePoint"
+  },
+  "restartDevicePool": {
+    "verb": "restart",
+    "object": "DevicePool"
+  },
+  "restartEnterpriseParameters": {
+    "verb": "restart",
+    "object": null
+  },
+  "restartGatekeeper": {
+    "verb": "restart",
+    "object": "Gatekeeper"
+  },
+  "restartGateway": {
+    "verb": "restart",
+    "object": "Gateway"
+  },
+  "restartH323Gateway": {
+    "verb": "restart",
+    "object": "H323Gateway"
+  },
+  "restartH323Phone": {
+    "verb": "restart",
+    "object": "H323Phone"
+  },
+  "restartH323Trunk": {
+    "verb": "restart",
+    "object": "H323Trunk"
+  },
+  "restartLine": {
+    "verb": "restart",
+    "object": "Line"
+  },
+  "restartMtp": {
+    "verb": "restart",
+    "object": "Mtp"
+  },
+  "restartPhone": {
+    "verb": "restart",
+    "object": "Phone"
+  },
+  "restartPhoneButtonTemplate": {
+    "verb": "restart",
+    "object": "PhoneButtonTemplate"
+  },
+  "restartRegion": {
+    "verb": "restart",
+    "object": "Region"
+  },
+  "restartResourcePriorityNamespace": {
+    "verb": "restart",
+    "object": "ResourcePriorityNamespace"
+  },
+  "restartResourcePriorityNamespaceList": {
+    "verb": "restart",
+    "object": "ResourcePriorityNamespaceList"
+  },
+  "restartRoutePartition": {
+    "verb": "restart",
+    "object": "RoutePartition"
+  },
+  "restartSipProfile": {
+    "verb": "restart",
+    "object": "SipProfile"
+  },
+  "restartSipTrunk": {
+    "verb": "restart",
+    "object": "SipTrunk"
+  },
+  "restartSoftKeyTemplate": {
+    "verb": "restart",
+    "object": "SoftKeyTemplate"
+  },
+  "restartSrst": {
+    "verb": "restart",
+    "object": "Srst"
+  },
+  "restartUcService": {
+    "verb": "restart",
+    "object": "UcService"
+  },
+  "restartVg224": {
+    "verb": "restart",
+    "object": "Vg224"
+  },
+  "restartVoiceMailPort": {
+    "verb": "restart",
+    "object": "VoiceMailPort"
+  },
+  "restartVoiceMailProfile": {
+    "verb": "restart",
+    "object": "VoiceMailProfile"
+  },
+  "unassignPresenceUser": {
+    "verb": "unassign",
+    "object": null
+  },
+  "wipePhone": {
+    "verb": "wipe",
+    "object": "Phone"
+  }
+};

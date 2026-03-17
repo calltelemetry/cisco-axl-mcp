@@ -12,7 +12,7 @@ An [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direc
 
 The MCP server ships with pre-parsed schemas from Cisco's official AXL WSDL for every supported CUCM version (11.0, 11.5, 12.0, 12.5, 14.0, 15.0). When you set `CUCM_VERSION`, it loads the schema for **your exact version** — so the LLM only sees object types, operations, fields, and enums that actually exist on your CallManager. No guessing, no hallucinated field names, no version mismatches.
 
-Six composable tools give the LLM progressive disclosure of this schema — 232 object types, 800+ operations, thousands of fields — plus direct SQL access to the CUCM Informix database. The server handles auto-pagination for large result sets, retries with exponential backoff on transient failures, and maintains a per-cluster JSONL audit trail of every AXL call.
+Seven composable tools give the LLM progressive disclosure of this schema — 232 object types, 1,065+ operations (including 123 action operations like apply, reset, restart, lock, wipe), thousands of fields — plus direct SQL access to the CUCM Informix database. The server handles auto-pagination for large result sets, retries with exponential backoff on transient failures, and maintains a per-cluster JSONL audit trail of every AXL call.
 
 Instead of hand-crafting XML payloads, you say things like:
 
@@ -21,6 +21,9 @@ Instead of hand-crafting XML payloads, you say things like:
 - *"Build a report of all 7940G phones in Device Pool Dallas-DP"*
 - *"Set up a hunt group for the support team with round-robin distribution"*
 - *"Enable Built-in Bridge on every phone in the Sales CSS"*
+- *"Apply config changes to all phones in Device Pool Dallas-DP"*
+- *"Reset every phone in the building after the firmware upgrade"*
+- *"Wipe the security credentials on a stolen device"*
 
 The LLM uses the tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
 
@@ -34,14 +37,15 @@ The LLM uses the tools below to discover the right object types, inspect require
 
 ## What It Does
 
-Exposes six composable tools that let an LLM discover, inspect, and execute CUCM operations — phones, users, line groups, hunt lists, SQL queries, and any other AXL-managed object:
+Exposes seven composable tools that let an LLM discover, inspect, and execute CUCM operations — phones, users, line groups, hunt lists, SQL queries, and any other AXL-managed object:
 
 | Tool | Description |
 |------|-------------|
-| `axl_execute` | Execute any AXL SOAP operation (add, get, list, update, remove). Supports `autoPage` for automatic pagination of list results |
+| `axl_execute` | Execute any AXL SOAP operation (add, get, list, update, remove, apply, reset, restart, lock, wipe, etc.). Supports `autoPage` for automatic pagination of list results |
 | `axl_describe_operation` | Describe required fields, types, and enums for an operation |
 | `axl_list_objects` | Discover available CUCM object types |
-| `axl_list_operations` | List CRUD operations for a specific object type |
+| `axl_list_operations` | List CRUD and action operations for a specific object type |
+| `axl_list_action_operations` | Discover all 123 non-CRUD action operations (apply, reset, restart, do, lock, wipe, assign, unassign), filterable by object or verb |
 | `axl_sql_query` | Execute a read-only SQL SELECT against the CUCM Informix database |
 | `axl_sql_update` | Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database |
 
@@ -133,7 +137,7 @@ npx @calltelemetry/cisco-axl-mcp --enabled-objects Phone,User,LineGroup
 AXL_MCP_CONFIG='{"enabled_objects": ["Phone", "User", "LineGroup"]}'
 ```
 
-When set, only the specified object types and their CRUD operations are available. Omit to allow all objects.
+When set, only the specified object types and their CRUD + action operations are available. Global action operations (like `doDeviceReset`, `doLdapSync`) that aren't tied to a specific object are always permitted. Omit to allow all objects.
 
 ### Resilience & Audit
 
@@ -226,7 +230,34 @@ Returns the CRUD operations available for a specific object type.
 |---|---|---|
 | `objectName` | Yes | Object type name (e.g. `Phone`, `User`, `LineGroup`) |
 
-**Returns:** `{ wsdlVersion, objectName, operations: { add, get, list, update, remove } }`
+**Returns:** `{ wsdlVersion, objectName, operations: { add, get, list, update, remove, apply?, reset?, restart?, lock?, wipe?, ... } }`
+
+Action verbs (apply, reset, restart, lock, wipe, etc.) are included when the object supports them. For example, Phone returns `apply`, `reset`, `restart`, `lock`, `wipe` alongside the standard CRUD verbs.
+
+### `axl_list_action_operations`
+
+Discover all 123 non-CRUD action operations across the AXL schema — apply, reset, restart, do, lock, wipe, assign, unassign.
+
+**Parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `objectName` | No | Filter by object type (e.g. `Phone` shows only phone-related actions) |
+| `verb` | No | Filter by verb prefix (e.g. `reset` shows all reset operations) |
+
+**Returns:** `{ wsdlVersion, totalCount, operations[] }` where each operation includes the verb, object (if mapped), and full operation name.
+
+**Examples:**
+
+```json
+// All action ops for Phone
+{ "objectName": "Phone" }
+// → applyPhone, resetPhone, restartPhone, lockPhone, wipePhone
+
+// All "do" operations (global actions)
+{ "verb": "do" }
+// → doDeviceReset, doLdapSync, doChangeDNDStatus, ...
+```
 
 ### `axl_sql_query`
 
@@ -320,11 +351,12 @@ You can also pass the nested object form directly in `data.returnedTags` if you 
 An LLM discovers how to use AXL operations in three steps:
 
 ```
-axl_list_objects          → what object types exist? (Phone, User, LineGroup, ...)
-axl_list_operations       → what operations exist for Phone? (addPhone, getPhone, ...)
-axl_describe_operation    → what fields does addPhone require?
-axl_execute               → call addPhone with the correct payload
-axl_sql_query             → run SQL directly against the CUCM Informix database
+axl_list_objects              → what object types exist? (Phone, User, LineGroup, ...)
+axl_list_operations           → what ops exist for Phone? (add, get, list, update, remove, apply, reset, restart, lock, wipe)
+axl_list_action_operations    → what action ops exist? (123 non-CRUD ops: apply, reset, do, lock, wipe, ...)
+axl_describe_operation        → what fields does addPhone require?
+axl_execute                   → call addPhone with the correct payload
+axl_sql_query                 → run SQL directly against the CUCM Informix database
 ```
 
 Fields marked `required: true` must be included. Fields with `enum` or `enumType` constrain valid values. For complex queries that don't map well to AXL CRUD operations, use `axl_sql_query` to query the database directly. See the [Examples](#examples--llm-conversations-real-cucm-15-output) section below for full interactive walkthroughs.
@@ -396,14 +428,19 @@ All examples below are real interactions with a live CUCM 15.0.1 cluster, showin
     "get": "getPhone",
     "list": "listPhone",
     "remove": "removePhone",
-    "update": "updatePhone"
+    "update": "updatePhone",
+    "apply": "applyPhone",
+    "reset": "resetPhone",
+    "restart": "restartPhone",
+    "lock": "lockPhone",
+    "wipe": "wipePhone"
   }
 }
 ```
 
 </details>
 
-> **Assistant:** Phone supports all 5 CRUD operations:
+> **Assistant:** Phone supports 5 CRUD operations plus 5 action operations:
 >
 > | Operation | Name | Use case |
 > |-----------|------|----------|
@@ -412,6 +449,11 @@ All examples below are real interactions with a live CUCM 15.0.1 cluster, showin
 > | **list** | `listPhone` | Search/filter phones with wildcards |
 > | **update** | `updatePhone` | Modify settings on an existing phone |
 > | **remove** | `removePhone` | Delete a device |
+> | **apply** | `applyPhone` | Push pending config changes to the phone |
+> | **reset** | `resetPhone` | Full reset (re-register and reload config) |
+> | **restart** | `restartPhone` | Restart the phone process |
+> | **lock** | `lockPhone` | Lock the device |
+> | **wipe** | `wipePhone` | Remote wipe security credentials |
 >
 > Want me to describe the required fields for any of these?
 

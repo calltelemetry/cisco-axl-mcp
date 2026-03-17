@@ -23,7 +23,7 @@ Instead of hand-crafting XML payloads, you say things like:
 - *"Enable Built-in Bridge on every phone in the Sales CSS"*
 - *"Apply config changes to all phones in Device Pool Dallas-DP"*
 - *"Reset every phone in the building after the firmware upgrade"*
-- *"Wipe the security credentials on a stolen device"*
+- *"Wipe a stolen Jabber client — erase all local data and credentials"*
 
 The LLM uses the tools below to discover the right object types, inspect required fields and valid enums, then execute the AXL operations — iterating through hundreds of records if needed.
 
@@ -450,10 +450,10 @@ All examples below are real interactions with a live CUCM 15.0.1 cluster, showin
 > | **update** | `updatePhone` | Modify settings on an existing phone |
 > | **remove** | `removePhone` | Delete a device |
 > | **apply** | `applyPhone` | Push pending config changes to the phone |
-> | **reset** | `resetPhone` | Full reset (re-register and reload config) |
-> | **restart** | `restartPhone` | Restart the phone process |
-> | **lock** | `lockPhone` | Lock the device |
-> | **wipe** | `wipePhone` | Remote wipe security credentials |
+> | **reset** | `resetPhone` | Full reset — unregisters, reloads config, re-registers |
+> | **restart** | `restartPhone` | Restart the phone process without full re-registration |
+> | **lock** | `lockPhone` | Lock the device PIN (Cisco Jabber/Webex mobile clients) |
+> | **wipe** | `wipePhone` | Factory-reset a mobile client, erasing all local data and credentials (Cisco Jabber/Webex) |
 >
 > Want me to describe the required fields for any of these?
 

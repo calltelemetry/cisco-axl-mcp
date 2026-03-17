@@ -517,7 +517,7 @@ export interface FieldSchema {
 
 export interface OperationSchema {
   verb: string;
-  /** Top-level AXL object this operation targets. Empty string for global action operations with no specific object. */
+  /** Top-level AXL object this operation targets. Empty string for global action operations (e.g. doDeviceReset, doLdapSync) that have no specific object. */
   object: string;
   fields: Record<string, FieldSchema>;
 }

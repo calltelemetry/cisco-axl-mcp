@@ -476,6 +476,9 @@ describe('axl_sql_update', () => {
 describe('axl_list_action_operations', () => {
   const originalEnv = { ...process.env };
 
+  /** Shape of each entry in the operations map returned by axl_list_action_operations */
+  type ActionOpInfo = { verb: string; object: string | null };
+
   beforeEach(() => {
     delete process.env.AXL_MCP_ENABLED_OBJECTS;
     delete process.env.AXL_MCP_CONFIG;
@@ -504,7 +507,7 @@ describe('axl_list_action_operations', () => {
     const data = parseResult(result);
     expect(data.count).toBeGreaterThan(0);
     // All returned operations should target Phone
-    for (const info of Object.values(data.operations) as Array<{ verb: string; object: string | null }>) {
+    for (const info of Object.values(data.operations) as ActionOpInfo[]) {
       expect(info.object).toBe('Phone');
     }
     expect(data.operations).toHaveProperty('applyPhone');
@@ -521,7 +524,7 @@ describe('axl_list_action_operations', () => {
     const data = parseResult(result);
     expect(data.count).toBeGreaterThan(0);
     // All returned operations should have verb 'reset'
-    for (const [op, info] of Object.entries(data.operations) as Array<[string, { verb: string }]>) {
+    for (const [op, info] of Object.entries(data.operations) as Array<[string, ActionOpInfo]>) {
       expect(info.verb).toBe('reset');
       expect(op).toMatch(/^reset/);
     }
@@ -548,7 +551,7 @@ describe('axl_list_action_operations', () => {
     const result = await handleTool('axl_list_action_operations', { verb: 'do' }, mockApi);
     const data = parseResult(result);
     expect(data.count).toBeGreaterThan(0);
-    for (const info of Object.values(data.operations) as Array<{ object: string | null }>) {
+    for (const info of Object.values(data.operations) as ActionOpInfo[]) {
       expect(info.object).toBeNull();
     }
   });

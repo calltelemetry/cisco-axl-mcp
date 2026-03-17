@@ -1,17 +1,22 @@
-name: Publish to npm
+name: Release
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -42,28 +47,9 @@ jobs:
       - name: Build
         run: yarn build
 
-      - name: Check if version is already published
-        id: version_check
-        run: |
-          PACKAGE_NAME=$(node -p "require('./package.json').name")
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          PUBLISHED_VERSION=$(npm view "${PACKAGE_NAME}@${CURRENT_VERSION}" version 2>/dev/null || echo "")
-          if [ -z "$PUBLISHED_VERSION" ]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "Version ${CURRENT_VERSION} is new — will publish."
-          else
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            echo "Version ${CURRENT_VERSION} already published — skipping."
-          fi
-
-      - name: Publish to npm
-        if: steps.version_check.outputs.should_publish == 'true'
-        run: npm publish --access public
+      - name: Semantic Release
+        run: npx semantic-release
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create GitHub Release
-        if: steps.version_check.outputs.should_publish == 'true' && startsWith(github.ref, 'refs/tags/')
-        run: gh release create "${{ github.ref_name }}" --generate-notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

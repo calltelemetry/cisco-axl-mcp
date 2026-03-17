@@ -7,6 +7,7 @@ import { getEnabledTopLevelObjects, isSqlEnabled } from '../lib/tool-config';
 import { toMcpError } from '../types/axl/errors';
 import { assertRecord, extractCredentialOverrides, optionalObject, requireString } from '../types/axl/guards';
 import {
+  AXL_ACTION_OPERATIONS,
   AXL_OBJECT_OPERATIONS,
   AXL_OBJECTS_SOURCE_WSDL_VERSION,
   AXL_TOP_LEVEL_OBJECTS,
@@ -27,6 +28,13 @@ const OPERATION_TO_OBJECT = (() => {
   }
   return map;
 })();
+
+/** Set of global action operation names that have no specific top-level object (e.g. doDeviceReset, doLdapSync). */
+const GLOBAL_ACTION_OPERATIONS = new Set<string>(
+  Object.entries(AXL_ACTION_OPERATIONS)
+    .filter(([, info]) => info.object === null)
+    .map(([op]) => op)
+);
 
 /** Convert ["name", "lines.line.dirn.pattern"] to { name: true, lines: { line: { dirn: { pattern: true } } } } */
 export function buildReturnedTags(fields: string[]): Record<string, unknown> {
@@ -52,7 +60,7 @@ export function buildReturnedTags(fields: string[]): Record<string, unknown> {
 export const tools: ToolDefinition[] = [
   {
     name: 'axl_execute',
-    description: 'Execute any AXL operation by name (raw access via cisco-axl executeOperation)',
+    description: 'Execute any AXL operation by name (raw access via cisco-axl executeOperation). Supports CRUD operations (add/get/list/update/remove) as well as action operations (apply/reset/restart/do/lock/wipe). Use axl_describe_operation to explore the input schema for any operation.',
     annotations: {
       title: 'Execute AXL Operation',
       readOnlyHint: false,
@@ -106,7 +114,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'axl_list_operations',
-    description: 'List CRUD operation names for a given top-level AXL object (from generated WSDL map)',
+    description: 'List all available operation names for a given top-level AXL object (CRUD verbs and action verbs such as apply/reset/restart where available)',
     annotations: {
       title: 'List AXL Operations',
       readOnlyHint: true,
@@ -124,7 +132,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'axl_describe_operation',
-    description: 'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute',
+    description: 'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute. Works for CRUD operations and action operations (apply/reset/restart/do/lock/wipe).',
     annotations: {
       title: 'Describe AXL Operation Schema',
       readOnlyHint: true,
@@ -141,6 +149,30 @@ export const tools: ToolDefinition[] = [
         },
       },
       required: ['operationName'],
+    },
+  },
+  {
+    name: 'axl_list_action_operations',
+    description: 'List all non-CRUD AXL action operations (apply/do/reset/restart/lock/wipe/assign/unassign). Optionally filter by object name or verb prefix. Use axl_describe_operation to get the input schema for any listed operation.',
+    annotations: {
+      title: 'List AXL Action Operations',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        objectName: {
+          type: 'string',
+          description: 'Filter to actions for a specific top-level object (e.g. Phone, Line). Omit to list all action operations.',
+        },
+        verb: {
+          type: 'string',
+          description: 'Filter by verb prefix: apply, do, reset, restart, lock, wipe, assign, unassign. Omit to list all verbs.',
+        },
+      },
     },
   },
   {
@@ -268,12 +300,14 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
         if (enabled) {
           const objectName = OPERATION_TO_OBJECT.get(operation);
           if (!objectName) {
-            throw new McpError(
-              ErrorCode.InvalidParams,
-              `Operation "${operation}" is not mapped to a top-level object; with enabled_objects set, only mapped CRUD operations are allowed`
-            );
-          }
-          if (!enabled.has(objectName)) {
+            // Allow global action operations (e.g. doDeviceReset, doLdapSync) which have no specific object
+            if (!GLOBAL_ACTION_OPERATIONS.has(operation)) {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                `Operation "${operation}" is not mapped to a top-level object; with enabled_objects set, only mapped CRUD/action operations and global action operations are allowed`
+              );
+            }
+          } else if (!enabled.has(objectName)) {
             throw new McpError(ErrorCode.InvalidParams, `Operation "${operation}" targets "${objectName}" which is not enabled`);
           }
         }
@@ -287,6 +321,22 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
         }
 
         return jsonResponse(await axlAPI.executeOperation(credentials, operation, tags, opts));
+      }
+      case 'axl_list_action_operations': {
+        const obj = assertRecord(args);
+        const objectFilter = typeof obj.objectName === 'string' ? obj.objectName : undefined;
+        const verbFilter = typeof obj.verb === 'string' ? obj.verb : undefined;
+        const entries = Object.entries(AXL_ACTION_OPERATIONS).filter(([, info]) => {
+          if (objectFilter && info.object !== objectFilter) return false;
+          if (verbFilter && info.verb !== verbFilter) return false;
+          return true;
+        });
+        const operations = Object.fromEntries(entries);
+        return jsonResponse({
+          wsdlVersion: AXL_OBJECTS_SOURCE_WSDL_VERSION,
+          count: entries.length,
+          operations,
+        });
       }
       case 'axl_sql_query': {
         if (!isSqlEnabled()) {

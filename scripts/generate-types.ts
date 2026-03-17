@@ -22,6 +22,10 @@ const OUT_OPERATION_SCHEMAS = path.resolve(process.cwd(), 'src/types/generated/a
 
 const CRUD_VERBS: CrudVerb[] = ['add', 'get', 'list', 'update', 'remove'];
 
+/** Non-CRUD verb prefixes for action operations (apply, reset, restart, etc.) */
+const ACTION_VERB_PREFIXES = ['apply', 'do', 'reset', 'restart', 'lock', 'wipe', 'assign', 'unassign'] as const;
+type ActionVerbPrefix = (typeof ACTION_VERB_PREFIXES)[number];
+
 // Objects that MUST exist in every WSDL version — build fails if missing.
 // These are fundamental CUCM primitives used by CallTelemetry's core features.
 const UNIVERSAL_OBJECTS = [
@@ -36,6 +40,11 @@ const UNIVERSAL_OBJECTS = [
 ];
 
 type CrudVerb = 'add' | 'get' | 'list' | 'update' | 'remove';
+
+interface ActionOpInfo {
+  verb: ActionVerbPrefix;
+  object: string | null;
+}
 
 /* ---------- Enum parsing ---------- */
 
@@ -296,7 +305,7 @@ async function main() {
   const latestOps = operationsByVersion[latestVersion] ?? [];
 
   // Build full CRUD map from latest WSDL
-  const objectOps: Record<string, Partial<Record<CrudVerb, string>>> = {};
+  const objectOps: Record<string, Record<string, string>> = {};
   const crudRegex = /^(add|get|list|update|remove)(.+)$/;
   for (const op of latestOps) {
     const match = op.match(crudRegex);
@@ -306,6 +315,27 @@ async function main() {
     if (!objectName) continue;
     objectOps[objectName] ||= {};
     objectOps[objectName][verb] = op;
+  }
+
+  // Build action (non-CRUD) operations map from latest WSDL
+  // Maps operation name → { verb, object } where object is the matched top-level AXL object or null
+  const actionOps: Record<string, ActionOpInfo> = {};
+  const actionRegex = new RegExp(`^(${ACTION_VERB_PREFIXES.join('|')})(.+)$`);
+  for (const op of latestOps) {
+    if (crudRegex.test(op)) continue; // already handled as CRUD
+    const match = op.match(actionRegex);
+    if (!match) continue;
+    const verb = match[1] as ActionVerbPrefix;
+    const suffix = match[2];
+    if (!suffix) continue;
+    // Try to find a matching top-level object by suffix (e.g. "Phone" in "applyPhone")
+    const object = objectOps[suffix] ? suffix : null;
+    actionOps[op] = { verb, object };
+    // Attach action to the object's operations map for easy discovery
+    if (object) {
+      objectOps[object] ||= {};
+      objectOps[object][verb] = op;
+    }
   }
 
   // Dynamically discover "core" objects — those with full CRUD (all 5 verbs)
@@ -318,7 +348,7 @@ async function main() {
     CRUD_VERBS.map(v => objectOps[obj]![v]!)
   );
 
-  console.log(`Discovered ${coreObjects.length} core objects (full CRUD) out of ${Object.keys(objectOps).length} total`);
+  console.log(`Discovered ${coreObjects.length} core objects (full CRUD) out of ${Object.keys(objectOps).length} total, ${Object.keys(actionOps).length} action operations`);
 
   // Validate core operations exist across all WSDL versions
   // Tiered: UNIVERSAL_OBJECTS missing = hard error, others = warning
@@ -393,8 +423,13 @@ export const AXL_TOP_LEVEL_OBJECTS = ${JSON.stringify(objects)} as const;
 export type AxlTopLevelObject = (typeof AXL_TOP_LEVEL_OBJECTS)[number];
 
 export type CrudVerb = 'add' | 'get' | 'list' | 'update' | 'remove';
+export type ActionVerbPrefix = 'apply' | 'do' | 'reset' | 'restart' | 'lock' | 'wipe' | 'assign' | 'unassign';
 
-export const AXL_OBJECT_OPERATIONS = ${JSON.stringify(objectOps, null, 2)} as const;
+/** Maps each top-level AXL object to its available operations by verb (CRUD + action verbs where applicable). */
+export const AXL_OBJECT_OPERATIONS: Record<string, Record<string, string>> = ${JSON.stringify(objectOps, null, 2)};
+
+/** All non-CRUD action operations, keyed by operation name. */
+export const AXL_ACTION_OPERATIONS: Record<string, { verb: ActionVerbPrefix; object: string | null }> = ${JSON.stringify(actionOps, null, 2)};
 `;
 
   await fs.mkdir(path.dirname(OUT_WSDL_SUPPORT), { recursive: true });
@@ -419,16 +454,26 @@ export const AXL_OBJECT_OPERATIONS = ${JSON.stringify(objectOps, null, 2)} as co
   const latestWsdl = await openWsdl(latestWsdlPath);
   const typeMetaCache = buildTypeMetaCache(latestWsdl);
 
-  // Extract schemas for all mapped operations
+  // Extract schemas for all mapped operations (CRUD + action)
   const operationSchemas: Record<string, OperationSchema> = {};
   let schemaCount = 0;
-  for (const [objName, verbs] of Object.entries(objectOps) as Array<[string, Partial<Record<CrudVerb, string>>]>) {
-    for (const [verb, opName] of Object.entries(verbs) as Array<[CrudVerb, string]>) {
+  for (const [objName, verbs] of Object.entries(objectOps)) {
+    for (const [verb, opName] of Object.entries(verbs)) {
       const schema = extractOperationSchema(latestWsdl, opName, verb, objName, typeMetaCache, enums);
       if (schema) {
         operationSchemas[opName] = schema;
         schemaCount++;
       }
+    }
+  }
+
+  // Also extract schemas for global action operations (those with no top-level object)
+  for (const [opName, { verb, object }] of Object.entries(actionOps)) {
+    if (object !== null) continue; // already handled above via objectOps
+    const schema = extractOperationSchema(latestWsdl, opName, verb, '', typeMetaCache, enums);
+    if (schema) {
+      operationSchemas[opName] = schema;
+      schemaCount++;
     }
   }
 
@@ -472,6 +517,7 @@ export interface FieldSchema {
 
 export interface OperationSchema {
   verb: string;
+  /** Top-level AXL object this operation targets. Empty string for global action operations (e.g. doDeviceReset, doLdapSync) that have no specific object. */
   object: string;
   fields: Record<string, FieldSchema>;
 }
@@ -484,7 +530,7 @@ export const AXL_OPERATION_SCHEMAS: Record<string, OperationSchema> = ${JSON.str
   await fs.mkdir(path.dirname(OUT_OPERATION_SCHEMAS), { recursive: true });
   await fs.writeFile(OUT_OPERATION_SCHEMAS, operationSchemasFile, 'utf8');
 
-  console.log(`Generated ${schemaCount} operation schemas, ${coreObjects.length} core objects, ${enumCount} enums (${Object.keys(largeEnums).length} large), ${typeMetaCache.size} type definitions`);
+  console.log(`Generated ${schemaCount} operation schemas (${Object.keys(actionOps).length} action ops), ${coreObjects.length} core objects, ${enumCount} enums (${Object.keys(largeEnums).length} large), ${typeMetaCache.size} type definitions`);
 }
 
 main().catch(err => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleTool } from '../src/tools/index';
 import type { AxlAPIService } from '../src/services/axl/index';
-import { AXL_TOP_LEVEL_OBJECTS, AXL_OBJECTS_SOURCE_WSDL_VERSION } from '../src/types/generated/axl-objects';
+import { AXL_TOP_LEVEL_OBJECTS, AXL_OBJECTS_SOURCE_WSDL_VERSION, AXL_ACTION_OPERATIONS } from '../src/types/generated/axl-objects';
 
 function parseResult(result: any): any {
   return JSON.parse(result.content[0].text);
@@ -67,6 +67,12 @@ describe('axl_list_operations', () => {
     expect(data.operations).toBeDefined();
     expect(data.operations.add).toBe('addPhone');
     expect(data.operations.get).toBe('getPhone');
+    // Action operations should also be included
+    expect(data.operations.apply).toBe('applyPhone');
+    expect(data.operations.reset).toBe('resetPhone');
+    expect(data.operations.restart).toBe('restartPhone');
+    expect(data.operations.lock).toBe('lockPhone');
+    expect(data.operations.wipe).toBe('wipePhone');
   });
 
   it('throws for unknown objectName', async () => {
@@ -189,6 +195,63 @@ describe('axl_execute edge cases', () => {
         mockApi
       )
     ).rejects.toThrow('is not mapped to a top-level object');
+  });
+
+  it('allows global action operations even when enabled_objects is set', async () => {
+    process.env.AXL_MCP_ENABLED_OBJECTS = 'Phone';
+    const { api, calls } = createCapturingMock();
+    // doDeviceReset has no specific object — it should be allowed regardless
+    await handleTool(
+      'axl_execute',
+      {
+        cucm_host: 'test.local',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+        operation: 'doDeviceReset',
+        data: { name: 'SEP001122334455', isHardReset: false },
+      },
+      api
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.operation).toBe('doDeviceReset');
+  });
+
+  it('allows object-mapped action operations when object is enabled', async () => {
+    process.env.AXL_MCP_ENABLED_OBJECTS = 'Phone';
+    const { api, calls } = createCapturingMock();
+    await handleTool(
+      'axl_execute',
+      {
+        cucm_host: 'test.local',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+        operation: 'resetPhone',
+        data: { name: 'SEP001122334455' },
+      },
+      api
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.operation).toBe('resetPhone');
+  });
+
+  it('blocks object-mapped action operations when object is not enabled', async () => {
+    process.env.AXL_MCP_ENABLED_OBJECTS = 'User';
+    await expect(
+      handleTool(
+        'axl_execute',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+          operation: 'resetPhone',
+          data: { name: 'SEP001122334455' },
+        },
+        mockApi
+      )
+    ).rejects.toThrow('targets "Phone" which is not enabled');
   });
 
   it('throws when operation object is disabled', async () => {
@@ -407,5 +470,89 @@ describe('axl_sql_update', () => {
         mockApi
       )
     ).rejects.toThrow('SQL operations are disabled');
+  });
+});
+
+describe('axl_list_action_operations', () => {
+  const originalEnv = { ...process.env };
+
+  /** Shape of each entry in the operations map returned by axl_list_action_operations */
+  type ActionOpInfo = { verb: string; object: string | null };
+
+  beforeEach(() => {
+    delete process.env.AXL_MCP_ENABLED_OBJECTS;
+    delete process.env.AXL_MCP_CONFIG;
+    process.argv = ['node', 'script.js'];
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('returns all action operations when no filters', async () => {
+    const result = await handleTool('axl_list_action_operations', {}, mockApi);
+    const data = parseResult(result);
+    expect(data.wsdlVersion).toBe(AXL_OBJECTS_SOURCE_WSDL_VERSION);
+    expect(data.count).toBe(Object.keys(AXL_ACTION_OPERATIONS).length);
+    expect(data.operations).toHaveProperty('doDeviceReset');
+    expect(data.operations).toHaveProperty('applyPhone');
+    expect(data.operations).toHaveProperty('resetPhone');
+    expect(data.operations).toHaveProperty('restartPhone');
+    expect(data.operations).toHaveProperty('lockPhone');
+    expect(data.operations).toHaveProperty('wipePhone');
+  });
+
+  it('filters by objectName', async () => {
+    const result = await handleTool('axl_list_action_operations', { objectName: 'Phone' }, mockApi);
+    const data = parseResult(result);
+    expect(data.count).toBeGreaterThan(0);
+    // All returned operations should target Phone
+    for (const info of Object.values(data.operations) as ActionOpInfo[]) {
+      expect(info.object).toBe('Phone');
+    }
+    expect(data.operations).toHaveProperty('applyPhone');
+    expect(data.operations).toHaveProperty('resetPhone');
+    expect(data.operations).toHaveProperty('restartPhone');
+    expect(data.operations).toHaveProperty('lockPhone');
+    expect(data.operations).toHaveProperty('wipePhone');
+    // doDeviceReset should not be included (it has no specific object)
+    expect(data.operations).not.toHaveProperty('doDeviceReset');
+  });
+
+  it('filters by verb', async () => {
+    const result = await handleTool('axl_list_action_operations', { verb: 'reset' }, mockApi);
+    const data = parseResult(result);
+    expect(data.count).toBeGreaterThan(0);
+    // All returned operations should have verb 'reset'
+    for (const [op, info] of Object.entries(data.operations) as Array<[string, ActionOpInfo]>) {
+      expect(info.verb).toBe('reset');
+      expect(op).toMatch(/^reset/);
+    }
+    expect(data.operations).toHaveProperty('resetPhone');
+    expect(data.operations).not.toHaveProperty('applyPhone');
+  });
+
+  it('filters by objectName and verb together', async () => {
+    const result = await handleTool('axl_list_action_operations', { objectName: 'Line', verb: 'reset' }, mockApi);
+    const data = parseResult(result);
+    expect(data.count).toBe(1);
+    expect(data.operations).toHaveProperty('resetLine');
+    expect(data.operations.resetLine).toEqual({ verb: 'reset', object: 'Line' });
+  });
+
+  it('returns empty when no match', async () => {
+    const result = await handleTool('axl_list_action_operations', { objectName: 'Css', verb: 'reset' }, mockApi);
+    const data = parseResult(result);
+    expect(data.count).toBe(0);
+    expect(data.operations).toEqual({});
+  });
+
+  it('global action operations have null object', async () => {
+    const result = await handleTool('axl_list_action_operations', { verb: 'do' }, mockApi);
+    const data = parseResult(result);
+    expect(data.count).toBeGreaterThan(0);
+    for (const info of Object.values(data.operations) as ActionOpInfo[]) {
+      expect(info.object).toBeNull();
+    }
   });
 });

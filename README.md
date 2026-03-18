@@ -32,8 +32,9 @@ The LLM uses the tools below to discover the right object types, inspect require
 | Server | Description |
 |--------|-------------|
 | **[cisco-axl-mcp](https://github.com/calltelemetry/cisco-axl-mcp)** | CUCM provisioning and admin via AXL SOAP API (this repo) |
+| **[cisco-ris-mcp](https://github.com/calltelemetry/cisco-ris-mcp)** | Real-time device registration, PerfMon counters, cluster health |
 | **[cisco-phone-mcp](https://github.com/calltelemetry/cisco-phone-mcp)** | Direct IP phone control — dial, screenshot, RTP stats |
-| **[cisco-cucm-mcp](https://github.com/calltelemetry/cisco-cucm-mcp)** | CUCM operational debugging — logs, performance, packet capture, service control |
+| **[cisco-cucm-mcp](https://github.com/calltelemetry/cisco-cucm-mcp)** | CUCM operational debugging — logs, traces, packet capture, service control |
 
 ## What It Does
 

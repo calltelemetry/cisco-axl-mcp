@@ -104,7 +104,7 @@ __metadata:
     "@semantic-release/git": "npm:^10.0.1"
     "@types/node": "npm:^25.5.0"
     "@vitest/coverage-v8": "npm:^4.1.0"
-    cisco-axl: "npm:^1.4.1"
+    cisco-axl: "npm:^1.5.0"
     dotenv: "npm:^17.3.1"
     eslint: "npm:^9.39.4"
     prettier: "npm:^3.8.1"
@@ -2310,12 +2310,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"cisco-axl@npm:^1.4.1":
-  version: 1.4.1
-  resolution: "cisco-axl@npm:1.4.1"
+"cisco-axl@npm:^1.5.0":
+  version: 1.5.0
+  resolution: "cisco-axl@npm:1.5.0"
   dependencies:
     strong-soap: "npm:^4.1.5"
-  checksum: 10c0/861c7d47f88bb35a87284de8c9e90c616bcdd253e4f48df5fa4b876df0c9e5a146c806d367b344752f62c8135600e7cf44c9cfc8a9541a94794f42025c756477
+  checksum: 10c0/aaeb5b82c9b53dead65a736ad2c8ad8a91e01bf6d2439e16fdf23c13c1a7191f2fab516eb12bd529b9cfd2e8785e6a69f7a86f8c27e2508ec74ff447ceddede9
   languageName: node
   linkType: hard
 

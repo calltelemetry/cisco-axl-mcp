@@ -40,7 +40,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^25.5.2",
     "cisco-axl": "^1.5.0",
-    "dotenv": "^17.4.0",
+    "dotenv": "^17.4.1",
     "strong-soap": "^4.1.14",
     "typescript": "^5.9.3",
     "zod": "^4.3.6"

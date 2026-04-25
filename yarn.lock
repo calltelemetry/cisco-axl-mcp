@@ -1889,14 +1889,14 @@ __metadata:
   linkType: hard
 
 "ajv@npm:^8.0.0, ajv@npm:^8.17.1":
-  version: 8.18.0
-  resolution: "ajv@npm:8.18.0"
+  version: 8.20.0
+  resolution: "ajv@npm:8.20.0"
   dependencies:
     fast-deep-equal: "npm:^3.1.3"
     fast-uri: "npm:^3.0.1"
     json-schema-traverse: "npm:^1.0.0"
     require-from-string: "npm:^2.0.2"
-  checksum: 10c0/e7517c426173513a07391be951879932bdf3348feaebd2199f5b901c20f99d60db8cd1591502d4d551dc82f594e82a05c4fe1c70139b15b8937f7afeaed9532f
+  checksum: 10c0/5df9a1c8f83863cde1bd3a9ddb426f599718f88e3dc9153616c79fb28e0be455335830d7f21d745576519f057b371352daa31047b6a33d7036fe08777d60cf2a
   languageName: node
   linkType: hard
 
@@ -3275,13 +3275,13 @@ __metadata:
   linkType: hard
 
 "express-rate-limit@npm:^8.2.1":
-  version: 8.4.0
-  resolution: "express-rate-limit@npm:8.4.0"
+  version: 8.4.1
+  resolution: "express-rate-limit@npm:8.4.1"
   dependencies:
     ip-address: "npm:10.1.0"
   peerDependencies:
     express: ">= 4.11"
-  checksum: 10c0/d391c45c40ebc0eedf4f51bf86f25212294a2df25b0b50dd7044940fc7afd98886e8e7bd6709f904d394606a912efdd90a6a7d1927f5208e4d153775f9a47531
+  checksum: 10c0/ead87bcf7b9b4094d2a597b6a77569eed34c7d2ff3a449eeef25e1cd4a96dc3de17b8da93e8cf82f757ef441974846138b4bc371621fbc72346f8cc4a07a712b
   languageName: node
   linkType: hard
 
@@ -3870,9 +3870,9 @@ __metadata:
   linkType: hard
 
 "hono@npm:^4.11.4":
-  version: 4.12.14
-  resolution: "hono@npm:4.12.14"
-  checksum: 10c0/78de4c98a9a3da0f067e38dcc4bd27f0d82b45d146ac39f5ca688515ee482c0a2e704d2ac6c1ee91ad17596b7c52b3e4b9483acd9c238d42f6ebcb43414a71b6
+  version: 4.12.15
+  resolution: "hono@npm:4.12.15"
+  checksum: 10c0/83f5778525bd4b706ddf1877c5f3cec0c8a3a0edf0944f8dfb041179c23a854166b8566f6e9be95894199a22e3b3aba139582d4ba24776e707c453d293bda24d
   languageName: node
   linkType: hard
 

@@ -42,7 +42,7 @@
     "cisco-axl": "^1.5.0",
     "dotenv": "^17.4.2",
     "strong-soap": "^4.1.14",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {

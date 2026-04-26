@@ -41,8 +41,6 @@
     "@types/node": "^25.6.0",
     "cisco-axl": "^2.1.0",
     "dotenv": "^17.4.2",
-    "strong-soap": "^4.1.14",
-    "typescript": "^6.0.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -53,7 +51,9 @@
     "eslint": "^10.2.1",
     "prettier": "^3.8.3",
     "semantic-release": "^25.0.3",
+    "strong-soap": "^5.0.8",
     "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.0",
     "vite": "^7.3.2",
     "vitest": "^4.1.5"

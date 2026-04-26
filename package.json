@@ -39,18 +39,18 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^25.6.0",
-    "cisco-axl": "^1.5.0",
+    "cisco-axl": "^2.1.0",
     "dotenv": "^17.4.2",
     "strong-soap": "^4.1.14",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
+    "@eslint/js": "^10.0.1",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",
     "@vitest/coverage-v8": "^4.1.5",
-    "eslint": "^9.39.4",
+    "eslint": "^10.2.1",
     "prettier": "^3.8.3",
     "semantic-release": "^25.0.3",
     "tsx": "^4.21.0",
@@ -59,7 +59,7 @@
     "vitest": "^4.1.5"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0 || ^6.0.0"
   },
   "packageManager": "yarn@4.12.0"
 }

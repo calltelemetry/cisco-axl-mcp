@@ -41,7 +41,7 @@
     "@types/node": "^25.6.0",
     "cisco-axl": "^2.1.0",
     "dotenv": "^17.4.2",
-    "zod": "^4.4.2"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -54,7 +54,7 @@
     "strong-soap": "^5.0.9",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.59.1",
+    "typescript-eslint": "^8.59.2",
     "vite": "^8.0.10",
     "vitest": "^4.1.5"
   },

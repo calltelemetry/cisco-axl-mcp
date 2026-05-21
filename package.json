@@ -47,7 +47,7 @@
     "@eslint/js": "^10.0.1",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^4.1.7",
     "eslint": "^10.4.0",
     "prettier": "^3.8.3",
     "semantic-release": "^25.0.3",
@@ -56,7 +56,7 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.13",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.7"
   },
   "peerDependencies": {
     "typescript": "^5.0.0 || ^6.0.0"

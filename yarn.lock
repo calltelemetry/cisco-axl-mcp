@@ -2189,18 +2189,18 @@ __metadata:
   linkType: hard
 
 "cisco-axl@npm:^2.1.0":
-  version: 2.1.0
-  resolution: "cisco-axl@npm:2.1.0"
+  version: 2.1.2
+  resolution: "cisco-axl@npm:2.1.2"
   dependencies:
     "@toon-format/toon": "npm:^2.1.0"
     cli-table3: "npm:^0.6.5"
     commander: "npm:^14.0.3"
     csv-stringify: "npm:^6.7.0"
-    strong-soap: "npm:^5.0.8"
+    strong-soap: "npm:5.0.10"
     update-notifier: "npm:^7.3.1"
   bin:
     cisco-axl: bin/cisco-axl.js
-  checksum: 10c0/58cf2969833e0ad27804dfc20f97e723981e2dc70dd3ae72a65cc4e5dcce9930cfd3139f473aeeb0b20948db5666e5f84477aa0a634e8ddaf16b41fe4b6b62cf
+  checksum: 10c0/be6491f524c8325bfed54dacc3261c85cef4ac215f88eb372fab053597080ca072c9c5b99cd98371557ac4296bf21203ccb285f853a788763b42ac563f6c9869
   languageName: node
   linkType: hard
 
@@ -6903,7 +6903,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"strong-soap@npm:^5.0.10, strong-soap@npm:^5.0.8":
+"strong-soap@npm:5.0.10, strong-soap@npm:^5.0.10":
   version: 5.0.10
   resolution: "strong-soap@npm:5.0.10"
   dependencies:

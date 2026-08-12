@@ -33,6 +33,15 @@ export const CLI_FAILURE_ENVELOPE_SCHEMA = z
 export type CliSuccessEnvelope = z.infer<typeof CLI_SUCCESS_ENVELOPE_SCHEMA>;
 export type CliFailureEnvelope = z.infer<typeof CLI_FAILURE_ENVELOPE_SCHEMA>;
 
+const UNSAFE_JSON_CODE_POINTS = /[\u007f-\u009f\u2028\u2029]/gu;
+
+export function serializeCliEnvelope(envelope: CliSuccessEnvelope | CliFailureEnvelope): string {
+  return JSON.stringify(envelope).replace(UNSAFE_JSON_CODE_POINTS, character => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return `\\u${codePoint.toString(16).padStart(4, '0')}`;
+  });
+}
+
 export interface CliErrorBody {
   code: string;
   message: string;

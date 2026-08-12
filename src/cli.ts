@@ -1,7 +1,13 @@
 import { readFile as defaultReadFile } from 'node:fs/promises';
 import { formatDiagnosticToken, parseCliCommand, type CliCommand } from './cli/command';
 import { readCliStdin, readJsonPayload, readSqlPayload, type ReadStdinOptions } from './cli/input';
-import { CliError, successEnvelope, toCliFailure, type CliExitCode } from './cli/output';
+import {
+  CliError,
+  serializeCliEnvelope,
+  successEnvelope,
+  toCliFailure,
+  type CliExitCode,
+} from './cli/output';
 import { validateOperationInput } from './cli/schema-validation';
 import {
   AXL_RUNNER_PACKAGE_VERSION,
@@ -289,14 +295,14 @@ export async function runCli(
       }
     }
 
-    stdout.write(`${JSON.stringify(successEnvelope(data, meta))}\n`);
+    stdout.write(`${serializeCliEnvelope(successEnvelope(data, meta))}\n`);
     return 0;
   } catch (error) {
     const sensitiveValues = [env.CUCM_PASSWORD, env.CUCM_USERNAME].filter(
       (value): value is string => typeof value === 'string' && value.length > 0
     );
     const failure = toCliFailure(error, sensitiveValues, meta);
-    stdout.write(`${JSON.stringify(failure.envelope)}\n`);
+    stdout.write(`${serializeCliEnvelope(failure.envelope)}\n`);
     stderr.write(`${failure.diagnostic}\n`);
     return failure.exitCode;
   }

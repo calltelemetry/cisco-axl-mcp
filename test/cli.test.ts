@@ -13,6 +13,14 @@ const completeEnv = {
   CUCM_VERSION: '15.0',
 };
 
+const unsafeJsonControls = ['\u0085', '\u009b', '\u2028', '\u2029'];
+
+function expectNoRawUnsafeJsonControls(...outputs: string[]): void {
+  for (const output of outputs) {
+    for (const control of unsafeJsonControls) expect(output).not.toContain(control);
+  }
+}
+
 function harness(overrides: Partial<CliDependencies> = {}) {
   let stdout = '';
   let stderr = '';
@@ -103,6 +111,41 @@ describe('schema-driven CLI discovery', () => {
     }
     expect(cli.stdout().trim().split('\n')).toHaveLength(1);
   });
+
+  it.each([
+    {
+      label: 'operation',
+      argv: ['describe', `notAnOperation${unsafeJsonControls.join('')}`, '--version', '15.0'],
+      detail: 'operation',
+      code: 'CLI_UNSUPPORTED_OPERATION',
+    },
+    {
+      label: 'object',
+      argv: [
+        'operations',
+        '--object',
+        `NotAnObject${unsafeJsonControls.join('')}`,
+        '--version',
+        '15.0',
+      ],
+      detail: 'object',
+      code: 'CLI_UNSUPPORTED_OBJECT',
+    },
+  ])(
+    'escapes unsafe JSON controls from unsupported $label failure output',
+    async ({ argv, detail, code }) => {
+      const cli = harness({ env: {} });
+
+      expect(await runCli(argv, cli.dependencies)).toBe(3);
+      expectNoRawUnsafeJsonControls(cli.stdout(), cli.stderr());
+      expect(cli.envelope()).toMatchObject({
+        error: {
+          code,
+          details: { [detail]: expect.stringContaining(unsafeJsonControls.slice(0, 2).join('')) },
+        },
+      });
+    }
+  );
 });
 
 describe('operation payload validation', () => {
@@ -362,6 +405,17 @@ describe('CLI execution', () => {
     expect(cli.stderr()).toBe('');
   });
 
+  it('escapes unsafe JSON controls in successful output without changing parsed payload values', async () => {
+    const result = `value${unsafeJsonControls.join('')}`;
+    const cli = harness({ runAxl: async () => ({ result }) });
+
+    expect(
+      await runCli(['execute', 'getPhone', '--data', '{"name":"SEP001"}'], cli.dependencies)
+    ).toBe(0);
+    expectNoRawUnsafeJsonControls(cli.stdout(), cli.stderr());
+    expect(cli.envelope().data).toEqual({ result });
+  });
+
   it('rejects schema-invalid input before SOAP dispatch', async () => {
     const runner = vi.fn(async () => ({ unreachable: true }));
     const cli = harness({ runAxl: runner });
@@ -372,6 +426,22 @@ describe('CLI execution', () => {
     expect(runner).not.toHaveBeenCalled();
     expect(cli.envelope().error.details).toContainEqual(
       expect.objectContaining({ path: 'name', kind: 'type', expected: 'string' })
+    );
+  });
+
+  it('escapes unsafe JSON controls from schema detail output without changing the field key', async () => {
+    const unknownField = `unknown${unsafeJsonControls.join('')}`;
+    const cli = harness();
+
+    expect(
+      await runCli(
+        ['execute', 'getPhone', '--data', JSON.stringify({ name: 'SEP001', [unknownField]: true })],
+        cli.dependencies
+      )
+    ).toBe(2);
+    expectNoRawUnsafeJsonControls(cli.stdout(), cli.stderr());
+    expect(cli.envelope().error.details).toContainEqual(
+      expect.objectContaining({ kind: 'unknown', keys: [unknownField] })
     );
   });
 

@@ -1,7 +1,8 @@
 import type { CucmCredentials } from '../../types/credentials';
 import type { ExecuteOperationOptions, TlsMode } from '../../lib/axl-client';
 import { getAxlClient } from '../../lib/axl-client';
-import { withRetry, isThrottleError } from '../../lib/retry';
+import { withRetry, isRetryable, isThrottleError } from '../../lib/retry';
+import { AxlPolicyError } from '../../types/axl/errors';
 import {
   getAdaptiveDelay,
   recordOperation,
@@ -11,6 +12,12 @@ import {
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isMutationRetryRisk(operation: string): boolean {
+  return (
+    operation !== 'executeSQLQuery' && !operation.startsWith('get') && !operation.startsWith('list')
+  );
 }
 
 export class AxlAPIService {
@@ -26,18 +33,16 @@ export class AxlAPIService {
     // Apply adaptive delay based on recent throttle history
     const adaptiveDelay = getAdaptiveDelay(credentials.host);
     if (adaptiveDelay > 0) {
-      console.error(
-        `[AXL Rate] Adaptive delay ${adaptiveDelay}ms for ${credentials.host} (recent throttle events detected)`
-      );
       await delay(adaptiveDelay);
     }
 
     const startTime = Date.now();
+    const mutation = isMutationRetryRisk(operation);
 
     try {
       const result = await withRetry(
         () => getAxlClient(credentials, tlsMode).executeOperation(operation, tags, opts),
-        undefined,
+        mutation ? { maxRetries: 0 } : undefined,
         {
           onRetry: (attempt, error) => {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -77,6 +82,12 @@ export class AxlAPIService {
         request: tags,
         sensitiveValues: [credentials.password, credentials.username],
       });
+      if (mutation && isRetryable(error)) {
+        throw new AxlPolicyError(
+          'AXL_MUTATION_OUTCOME_UNKNOWN',
+          'Mutation outcome is unknown after a retryable transport failure; reconciliation/readback is required before another attempt'
+        );
+      }
       throw sanitizeError(error, [credentials.password, credentials.username]);
     }
   }

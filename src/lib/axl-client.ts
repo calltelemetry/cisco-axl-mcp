@@ -167,12 +167,12 @@ export function getAxlClient(creds: CucmCredentials, tlsMode: TlsMode = 'secure'
   const cached = clientCache.get(key);
   if (cached) return cached;
 
-  const service = new CiscoAxlService(
-    creds.host,
-    creds.username,
-    creds.password,
-    creds.version
-  ) as unknown as CiscoAxlInternals;
+  const service = new CiscoAxlService(creds.host, creds.username, creds.password, creds.version, {
+    // cisco-axl's default handler writes DEBUG request payloads to console.log.
+    // The CLI and MCP service expose failures through their controlled outputs instead.
+    logging: { level: 'error', handler: () => {} },
+    retry: { retries: 0 },
+  }) as unknown as CiscoAxlInternals;
   applyExplicitTls(service, tlsMode);
 
   const client: AxlClient = {

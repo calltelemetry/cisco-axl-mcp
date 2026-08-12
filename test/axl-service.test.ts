@@ -187,6 +187,57 @@ describe('AxlAPIService.executeOperation', () => {
     }
   }, 15_000);
 
+  it('does not retry a retryable mutation and classifies its outcome as unknown', async () => {
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '3';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    mockClient.executeOperation.mockRejectedValue(new Error('503 Service Unavailable'));
+    let stdout = '';
+    let stderr = '';
+
+    try {
+      expect(
+        await runCli(
+          [
+            'execute',
+            'updatePhone',
+            '--data',
+            '{"name":"SEP111","description":"new description"}',
+            '--write',
+            '--confirm',
+            'updatePhone',
+          ],
+          {
+            env: {
+              CUCM_HOST: creds.host,
+              CUCM_USERNAME: creds.username,
+              CUCM_PASSWORD: creds.password,
+              CUCM_VERSION: '15.0',
+            },
+            stdout: { write: value => ((stdout += String(value)), true) },
+            stderr: { write: value => ((stderr += String(value)), true) },
+            readStdin: async () => '',
+            runnerDependencies: { service: new AxlAPIService() },
+          }
+        )
+      ).toBe(5);
+      expect(JSON.parse(stdout)).toMatchObject({
+        error: {
+          code: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+          message: expect.stringContaining('reconciliation'),
+        },
+      });
+      expect(stderr).toContain('AXL_MUTATION_OUTCOME_UNKNOWN');
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+    }
+  });
+
   it('applies adaptive delay when recent throttle events exist', async () => {
     // Seed audit log with a recent throttle event
     writeAuditEntry(creds.host, {
@@ -210,8 +261,7 @@ describe('AxlAPIService.executeOperation', () => {
 
     vi.useRealTimers();
 
-    const rateMsg = stderrSpy.mock.calls.find(c => String(c[0]).includes('[AXL Rate]'));
-    expect(rateMsg).toBeDefined();
+    expect(stderrSpy).not.toHaveBeenCalled();
     stderrSpy.mockRestore();
   });
 

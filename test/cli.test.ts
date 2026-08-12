@@ -256,6 +256,83 @@ describe('operation payload validation', () => {
     );
   });
 
+  it('evaluates nested choices only after their optional parent sequence is selected', () => {
+    const schema: OperationSchema = {
+      verb: 'add',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        branchRequired: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+          sequence: 0,
+        },
+        branchOptional: {
+          type: 'integer',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+          sequence: 0,
+        },
+        alternate: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+          sequence: 0,
+        },
+      },
+      choices: [
+        {
+          minOccurs: 1,
+          maxOccurs: 1,
+          options: [['branchRequired', 'branchOptional'], ['alternate']],
+        },
+      ],
+      sequences: [
+        {
+          minOccurs: 0,
+          maxOccurs: 1,
+          fields: ['branchRequired', 'branchOptional', 'alternate'],
+        },
+      ],
+      attributes: {},
+    };
+
+    expect(validateOperationInput(schema, {}, {})).toEqual({});
+    expect(validateOperationInput(schema, {}, { branchRequired: 'selected' })).toEqual({
+      branchRequired: 'selected',
+    });
+    expect(() => validateOperationInput(schema, {}, { branchOptional: 7 })).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([expect.objectContaining({ kind: 'choice' })]),
+      })
+    );
+  });
+
+  it('accepts generated CUCM 15 optional compositor branches without inventing requirements', async () => {
+    const artifacts = await loadAxlVersionArtifacts('15.0');
+
+    expect(
+      validateOperationInput(
+        artifacts.operationSchemas.addGatewayEndpointAnalogAccess!,
+        artifacts.enums,
+        { gatewayEndpointAnalogAccess: {} }
+      )
+    ).toEqual({ gatewayEndpointAnalogAccess: {} });
+    expect(
+      validateOperationInput(artifacts.operationSchemas.updateApplicationServer!, artifacts.enums, {
+        uuid: 'abc',
+        removeAppUsers: {},
+      })
+    ).toEqual({ uuid: 'abc', removeAppUsers: {} });
+  });
+
   it('rejects a generated CUCM 15 addPhone payload missing occurrence-required fields', async () => {
     const artifacts = await loadAxlVersionArtifacts('15.0');
 
@@ -281,24 +358,29 @@ describe('operation payload validation', () => {
   it('validates generated simple-content attributes with strong-soap value/attribute keys', async () => {
     const artifacts = await loadAxlVersionArtifacts('15.0');
     const schema = artifacts.operationSchemas.listChange!;
-    const valid = { startChangeId: { $value: 42, $attributes: { queueId: 'queue-1' } } };
+    const valid = { startChangeId: { value: 42, attributes: { queueId: 'queue-1' } } };
 
     expect(validateOperationInput(schema, artifacts.enums, valid)).toEqual(valid);
     expect(() =>
       validateOperationInput(schema, artifacts.enums, {
-        startChangeId: { $value: 42, $attributes: {} },
+        startChangeId: { value: 42, attributes: {} },
       })
     ).toThrowError(
       expect.objectContaining({
         details: expect.arrayContaining([
           expect.objectContaining({
-            path: 'startChangeId.$attributes.queueId',
+            path: 'startChangeId.attributes.queueId',
             kind: 'attribute',
           }),
         ]),
       })
     );
     expect(() => validateOperationInput(schema, artifacts.enums, { startChangeId: 42 })).toThrow();
+    expect(() =>
+      validateOperationInput(schema, artifacts.enums, {
+        startChangeId: { $value: 42, $attributes: { queueId: 'queue-1' } },
+      })
+    ).toThrow();
   });
 
   it('rejects null for non-nillable opaque fields while accepting opaque JSON values', () => {

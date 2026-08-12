@@ -62,6 +62,37 @@ function belongsToSequence(name: string, sequences: SequenceSchema[]): boolean {
   return sequences.some(sequence => sequence.fields.includes(name));
 }
 
+function memberships(value: number | number[] | undefined): number[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function shouldEvaluateChoice(
+  choiceIndex: number,
+  choice: ChoiceSchema,
+  fields: Record<string, FieldSchema>,
+  sequences: SequenceSchema[],
+  value: Record<string, unknown>
+): boolean {
+  const optionFields = [...new Set(choice.options.flat())];
+  const markedFields = Object.entries(fields)
+    .filter(([, field]) => memberships(field.choice).includes(choiceIndex))
+    .map(([name]) => name);
+  const contextFields = markedFields.length > 0 ? markedFields : optionFields;
+  if (contextFields.some(name => memberships(fields[name]?.sequence).length === 0)) return true;
+
+  const parentSequences = [
+    ...new Set(contextFields.flatMap(name => memberships(fields[name]?.sequence))),
+  ];
+  return parentSequences.some(sequenceIndex => {
+    const sequence = sequences[sequenceIndex];
+    return (
+      sequence !== undefined &&
+      (sequence.minOccurs >= 1 || sequence.fields.some(field => hasOwn(value, field)))
+    );
+  });
+}
+
 function buildAttributeValueSchema(
   attribute: AttributeSchema,
   enums: Record<string, string[]>
@@ -100,12 +131,12 @@ function addRequiredAttributeIssues(
   context: z.RefinementCtx,
   attributes: Record<string, AttributeSchema>
 ): void {
-  if (hasOwn(value, '$attributes')) return;
+  if (hasOwn(value, 'attributes')) return;
   for (const [name, attribute] of Object.entries(attributes)) {
     if (attribute.required === true) {
       context.addIssue({
         code: 'custom',
-        path: ['$attributes', name],
+        path: ['attributes', name],
         message: 'Required attribute is missing',
         params: { kind: 'attribute', expected: attribute.type },
       });
@@ -125,7 +156,7 @@ function buildObjectSchema(
     shape[name] = buildFieldSchema(field, enums).optional();
   }
   if (Object.keys(attributes).length > 0) {
-    shape.$attributes = buildAttributesSchema(attributes, enums).optional();
+    shape.attributes = buildAttributesSchema(attributes, enums).optional();
   }
 
   return z.strictObject(shape).superRefine((value, context) => {
@@ -146,13 +177,18 @@ function buildObjectSchema(
       }
     }
 
-    for (const choice of choices) {
+    for (const [choiceIndex, choice] of choices.entries()) {
+      if (!shouldEvaluateChoice(choiceIndex, choice, fields, sequences, value)) continue;
       let selected = 0;
       let partial = false;
       for (const option of choice.options) {
         const present = option.filter(field => hasOwn(value, field));
-        if (present.length === option.length && present.length > 0) selected++;
-        else if (present.length > 0) partial = true;
+        if (present.length === 0) continue;
+        const missingRequired = option.filter(
+          field => (fields[field]?.minOccurs ?? 0) >= 1 && !hasOwn(value, field)
+        );
+        if (missingRequired.length === 0) selected++;
+        else partial = true;
       }
       const maximum =
         choice.maxOccurs === 'unbounded' ? Number.POSITIVE_INFINITY : choice.maxOccurs;
@@ -202,8 +238,8 @@ function withSimpleContentAttributes(
   const attributeSchema = buildAttributesSchema(attributes, enums);
   const wrapped = z
     .strictObject({
-      $value: valueSchema,
-      $attributes: attributeSchema.optional(),
+      value: valueSchema,
+      attributes: attributeSchema.optional(),
     })
     .superRefine((value, context) => addRequiredAttributeIssues(value, context, attributes));
   const hasRequiredAttribute = Object.values(attributes).some(
@@ -286,7 +322,7 @@ function fieldAtPath(schema: OperationSchema, path: PropertyKey[]): FieldSchema 
       if (field?.fields) fields = field.fields;
       continue;
     }
-    if (part === '$value' || part === '$attributes') continue;
+    if (part === 'value' || part === 'attributes') continue;
     field = fields[String(part)];
     if (!field) return undefined;
     if (field.type === 'array' && field.items?.fields) fields = field.items.fields;
@@ -304,11 +340,11 @@ function attributeAtPath(
   let field: FieldSchema | undefined;
   for (let index = 0; index < path.length; index++) {
     const part = path[index];
-    if (part === '$attributes') {
+    if (part === 'attributes') {
       const name = path[index + 1];
       return typeof name === 'string' ? attributes[name] : undefined;
     }
-    if (part === '$value' || typeof part === 'number') continue;
+    if (part === 'value' || typeof part === 'number') continue;
     field = fields[String(part)];
     if (!field) return undefined;
     attributes = field.attributes ?? {};

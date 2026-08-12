@@ -46,6 +46,7 @@ function pickField(field: any): Record<string, unknown> {
       required: field.required,
       typeName: field.typeName,
       choice: field.choice,
+      sequence: field.sequence,
     }).filter(([, value]) => value !== undefined)
   );
 }
@@ -54,8 +55,14 @@ function actualGolden(version: '11.5' | '15.0'): unknown {
   const byOperation = schemas.AXL_OPERATION_SCHEMAS_BY_VERSION?.[version];
   const getCallManager = byOperation?.getCallManager;
   const addPhone = byOperation?.addPhone;
+  const addSipProfile = byOperation?.addSipProfile;
+  const addT1Gateway = byOperation?.addCiscoCatalyst6000T1VoIPGatewayT1;
   const vendorConfig = byOperation?.updateEnterprisePhoneConfig?.fields.vendorConfig;
   const line = addPhone?.fields.phone.fields.lines.fields.line;
+  const sipProfile = addSipProfile?.fields.sipProfile;
+  const sipProfileSequence = sipProfile?.sequences?.find((sequence: any) =>
+    sequence.fields.includes('name')
+  );
 
   return {
     sourceDigests: support.AXL_SCHEMA_SOURCE_DIGESTS_BY_VERSION?.[version],
@@ -77,7 +84,18 @@ function actualGolden(version: '11.5' | '15.0'): unknown {
       itemIndex: pickField(line?.items?.fields?.index ?? {}),
       itemDirnPattern: pickField(line?.items?.fields?.dirn?.fields?.pattern ?? {}),
     },
+    optionalSipProfileSequence: {
+      group: sipProfileSequence
+        ? {
+            minOccurs: sipProfileSequence.minOccurs,
+            maxOccurs: sipProfileSequence.maxOccurs,
+            containsName: sipProfileSequence.fields.includes('name'),
+          }
+        : undefined,
+      name: pickField(sipProfile?.fields.name ?? {}),
+    },
     protocolEnum: addPhone?.fields.phone.fields.protocol.enum,
+    fdlChannelEnum: addT1Gateway?.fields.ciscoCatalyst6000T1VoIPGatewayT1.fields.fdlChannel.enum,
     vendorConfig: {
       ...pickField(vendorConfig ?? {}),
       opaque: vendorConfig?.opaque,
@@ -91,6 +109,19 @@ function collectBrokenChoiceLinks(
   broken: string[]
 ): void {
   const choices = shape.choices ?? [];
+  for (const [choiceIndex, choice] of choices.entries()) {
+    for (const name of choice.options.flat()) {
+      const field = shape.fields?.[name];
+      const memberships = Array.isArray(field?.choice)
+        ? field.choice
+        : field?.choice === undefined
+          ? []
+          : [field.choice];
+      if (!memberships.includes(choiceIndex)) {
+        broken.push(`${path} choice ${choiceIndex} -> ${name}`);
+      }
+    }
+  }
   for (const [name, field] of Object.entries(shape.fields ?? {})) {
     const memberships = Array.isArray(field.choice)
       ? field.choice
@@ -139,6 +170,19 @@ describe('generated AXL version contract', () => {
       expect(actualGolden(version)).toEqual(readGolden(version));
     }
   );
+
+  it('detects a choice option without a field membership backlink', () => {
+    const broken: string[] = [];
+    collectBrokenChoiceLinks(
+      {
+        fields: { name: {} },
+        choices: [{ options: [['name']] }],
+      },
+      'synthetic',
+      broken
+    );
+    expect(broken).toEqual(['synthetic choice 0 -> name']);
+  });
 
   it.each(['11.5', '15.0'] as const)(
     'keeps every %s nested choice membership linked to its declaring group',

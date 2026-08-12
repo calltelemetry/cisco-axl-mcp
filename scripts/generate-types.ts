@@ -66,6 +66,12 @@ interface ChoiceSchema {
   options: string[][];
 }
 
+interface SequenceSchema {
+  minOccurs: number;
+  maxOccurs: Occurs;
+  fields: string[];
+}
+
 interface AttributeSchema {
   type: string;
   required?: true;
@@ -86,9 +92,11 @@ interface FieldSchema {
   enumType?: string;
   fields?: Record<string, FieldSchema>;
   choices?: ChoiceSchema[];
+  sequences?: SequenceSchema[];
   attributes?: Record<string, AttributeSchema>;
   items?: FieldSchema;
   choice?: number | number[];
+  sequence?: number | number[];
   opaque?: true;
   ref?: string;
 }
@@ -96,6 +104,7 @@ interface FieldSchema {
 interface SchemaShape {
   fields: Record<string, FieldSchema>;
   choices: ChoiceSchema[];
+  sequences: SequenceSchema[];
   attributes: Record<string, AttributeSchema>;
 }
 
@@ -217,12 +226,37 @@ async function parseEnums(enumsXsdPath: string): Promise<Record<string, string[]
     const typeBody = typeMatch[2];
     if (!typeName || typeBody === undefined) throw new Error(`Malformed enum in ${enumsXsdPath}`);
     const values = [...typeBody.matchAll(valueRegex)].flatMap(match =>
-      match[1] === undefined ? [] : [match[1]]
+      match[1] === undefined ? [] : [decodeXmlEntities(match[1])]
     );
     if (values.length > 0) enums.set(typeName, values);
   }
 
   return stableRecord(enums.entries());
+}
+
+function decodeXmlEntities(value: string): string {
+  const namedEntities: Record<string, string> = {
+    amp: '&',
+    apos: "'",
+    gt: '>',
+    lt: '<',
+    quot: '"',
+  };
+
+  return value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, reference: string) => {
+    const named = namedEntities[reference];
+    if (named !== undefined) return named;
+
+    const codePoint = reference.startsWith('#x')
+      ? Number.parseInt(reference.slice(2), 16)
+      : reference.startsWith('#')
+        ? Number.parseInt(reference.slice(1), 10)
+        : Number.NaN;
+    if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
+      throw new Error(`Unsupported XML entity ${entity}`);
+    }
+    return String.fromCodePoint(codePoint);
+  });
 }
 
 async function openWsdl(wsdlPath: string): Promise<any> {
@@ -341,7 +375,7 @@ function discoverOperations(operations: string[]): {
 }
 
 function emptyShape(): SchemaShape {
-  return { fields: {}, choices: [], attributes: {} };
+  return { fields: {}, choices: [], sequences: [], attributes: {} };
 }
 
 function sameSchema(left: unknown, right: unknown): boolean {
@@ -355,6 +389,12 @@ function appendChoice(field: FieldSchema, choiceIndex: number): void {
   delete field.required;
 }
 
+function appendSequence(field: FieldSchema, sequenceIndex: number): void {
+  if (field.sequence === undefined) field.sequence = sequenceIndex;
+  else if (Array.isArray(field.sequence)) field.sequence.push(sequenceIndex);
+  else field.sequence = [field.sequence, sequenceIndex];
+}
+
 function shiftChoiceIndexes(shape: SchemaShape, offset: number): void {
   if (offset === 0) return;
   for (const field of Object.values(shape.fields)) {
@@ -363,10 +403,23 @@ function shiftChoiceIndexes(shape: SchemaShape, offset: number): void {
   }
 }
 
+function shiftSequenceIndexes(shape: SchemaShape, offset: number): void {
+  if (offset === 0) return;
+  for (const field of Object.values(shape.fields)) {
+    if (typeof field.sequence === 'number') field.sequence += offset;
+    else if (Array.isArray(field.sequence)) {
+      field.sequence = field.sequence.map(value => value + offset);
+    }
+  }
+}
+
 function mergeShape(target: SchemaShape, source: SchemaShape, context: string): void {
   const choiceOffset = target.choices.length;
   shiftChoiceIndexes(source, choiceOffset);
   target.choices.push(...source.choices);
+  const sequenceOffset = target.sequences.length;
+  shiftSequenceIndexes(source, sequenceOffset);
+  target.sequences.push(...source.sequences);
 
   for (const [name, field] of Object.entries(source.fields)) {
     const existing = target.fields[name];
@@ -493,6 +546,7 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
       };
       if (typeName) schema.typeName = typeName;
       if (shape.choices.length > 0) schema.choices = shape.choices;
+      if (shape.sequences.length > 0) schema.sequences = shape.sequences;
       if (Object.keys(shape.attributes).length > 0) schema.attributes = shape.attributes;
       return schema;
     }
@@ -528,6 +582,7 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
       if (item.typeName) field.typeName = item.typeName;
       if (item.fields) field.fields = item.fields;
       if (item.choices) field.choices = item.choices;
+      if (item.sequences) field.sequences = item.sequences;
       if (item.attributes) field.attributes = item.attributes;
     } else {
       field = { ...item, minOccurs, maxOccurs, nillable };
@@ -571,6 +626,37 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
     return result;
   }
 
+  function buildSequence(
+    node: any,
+    stack: Set<string>,
+    context: string,
+    requiredContext: boolean
+  ): SchemaShape {
+    const minOccurs = parseMinOccurs(node);
+    const maxOccurs = parseMaxOccurs(node);
+    if (maxOccurs !== 1) {
+      throw new Error(
+        `Unsupported repeating sequence in ${context}: minOccurs=${minOccurs}, maxOccurs=${maxOccurs}`
+      );
+    }
+
+    const result = emptyShape();
+    const childRequiredContext = requiredContext && minOccurs >= 1;
+    for (const child of node.children ?? []) {
+      const childKind = nodeKind(child);
+      if (['annotation', 'documentation'].includes(childKind)) continue;
+      mergeShape(result, buildShape(child, stack, context, childRequiredContext), context);
+    }
+
+    if (minOccurs !== 1) {
+      const sequenceIndex = result.sequences.length;
+      const fields = Object.keys(result.fields);
+      result.sequences.push({ minOccurs, maxOccurs, fields });
+      for (const field of Object.values(result.fields)) appendSequence(field, sequenceIndex);
+    }
+    return result;
+  }
+
   function buildShape(
     node: any,
     stack: Set<string>,
@@ -595,12 +681,13 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
     if (kind === 'choice') {
       return buildChoice(node, stack, context, requiredContext);
     }
+    if (kind === 'sequence') {
+      return buildSequence(node, stack, context, requiredContext);
+    }
     if (kind === 'any') {
       throw new Error(`Unsupported wildcard content in ${context}; only XVendorConfig is opaque`);
     }
     if (['annotation', 'documentation'].includes(kind)) return result;
-
-    const childRequiredContext = requiredContext;
 
     if (kind === 'extension') {
       const baseTypeName = localName(node.$base);
@@ -621,13 +708,7 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
       }
     }
 
-    const structuralKinds = new Set([
-      'complextype',
-      'complexcontent',
-      'extension',
-      'restriction',
-      'sequence',
-    ]);
+    const structuralKinds = new Set(['complextype', 'complexcontent', 'extension', 'restriction']);
     if (!structuralKinds.has(kind)) {
       throw new Error(`Unsupported schema construct ${kind || '<unknown>'} in ${context}`);
     }
@@ -644,7 +725,7 @@ function createSchemaBuilder(registry: SchemaRegistry, enums: Record<string, str
       if (childKind === 'simplecontent') {
         throw new Error(`Simple content reached object shape in ${context}`);
       }
-      mergeShape(result, buildShape(child, stack, context, childRequiredContext), context);
+      mergeShape(result, buildShape(child, stack, context, requiredContext), context);
     }
     return result;
   }
@@ -893,6 +974,12 @@ export interface ChoiceSchema {
   options: string[][];
 }
 
+export interface SequenceSchema {
+  minOccurs: number;
+  maxOccurs: Occurs;
+  fields: string[];
+}
+
 export interface AttributeSchema {
   type: string;
   required?: true;
@@ -913,9 +1000,11 @@ export interface FieldSchema {
   enumType?: string;
   fields?: Record<string, FieldSchema>;
   choices?: ChoiceSchema[];
+  sequences?: SequenceSchema[];
   attributes?: Record<string, AttributeSchema>;
   items?: FieldSchema;
   choice?: number | number[];
+  sequence?: number | number[];
   opaque?: true;
   ref?: string;
 }
@@ -930,6 +1019,7 @@ export interface OperationMetadata {
 export interface OperationSchema extends OperationMetadata {
   fields: Record<string, FieldSchema>;
   choices: ChoiceSchema[];
+  sequences: SequenceSchema[];
   attributes: Record<string, AttributeSchema>;
 }
 

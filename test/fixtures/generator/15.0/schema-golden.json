@@ -4,7 +4,7 @@
     "schemaSha256": "637cee767b1eb6c3c7ede9f36de9b2aa8514397844d7a25f78e36128a585e079",
     "enumsSha256": "2c911c6e60d453d2102b730a5ab0c9f35497598dfbea582a513e6de23c64154c"
   },
-  "operationSchemaDigest": "793a626515bf7071ac6977529c9ed4b1563bf9b88c4867c223d9e23bcc16cd93",
+  "operationSchemaDigest": "9b6ee272040440da33a8ea9043b49ba99b4583c55668ab4fa8b92f6ad0c10624",
   "catalogOperations": [
     "listCallManager",
     "getCallManager",
@@ -55,7 +55,7 @@
       "minOccurs": 1,
       "maxOccurs": 1,
       "nillable": false,
-      "required": true,
+      "sequence": 0,
       "typeName": "XInteger"
     },
     "itemDirnPattern": {
@@ -63,10 +63,26 @@
       "minOccurs": 1,
       "maxOccurs": 1,
       "nillable": false,
-      "required": true
+      "sequence": 0
+    }
+  },
+  "optionalSipProfileSequence": {
+    "group": {
+      "minOccurs": 0,
+      "maxOccurs": 1,
+      "containsName": true
+    },
+    "name": {
+      "type": "string",
+      "minOccurs": 1,
+      "maxOccurs": 1,
+      "nillable": false,
+      "typeName": "String50",
+      "sequence": 0
     }
   },
   "protocolEnum": ["SCCP", "Digital Access PRI", "H.225", "Analog Access", "Digital Access T1", "Route Point", "Unicast Bridge", "Multicast Point", "Inter-Cluster Trunk", "RAS", "Digital Access BRI", "SIP", "MGCP", "Static SIP Mobile Subscriber", "SIP Connector", "Remote Destination", "Mobile Smart Client", "Digital Access E1 R2", "CTI Remote Device", "Protocol Not Specified"],
+  "fdlChannelEnum": ["AT&T 54016", "ANSI T1.403 NI", "ANSI T1.403.CI", "None"],
   "vendorConfig": {
     "type": "opaque",
     "minOccurs": 0,

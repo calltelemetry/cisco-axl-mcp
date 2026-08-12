@@ -2,9 +2,8 @@ import type { CucmCredentials } from '../../types/credentials';
 import type { ExecuteOperationOptions, TlsMode } from '../../lib/axl-client';
 import { getAxlClient } from '../../lib/axl-client';
 import { withRetry, isRetryable, isThrottleError } from '../../lib/retry';
-import { isMutationOperationFromCatalog } from '../../lib/operation-classification-core';
+import { isMutationOperationForVersion } from '../../lib/operation-classification-core';
 import { AxlPolicyError } from '../../types/axl/errors';
-import { AXL_OPERATION_METADATA } from '../../types/generated/axl-latest';
 import {
   getAdaptiveDelay,
   recordOperation,
@@ -33,7 +32,7 @@ export class AxlAPIService {
     }
 
     const startTime = Date.now();
-    const mutation = isMutationOperationFromCatalog(operation, AXL_OPERATION_METADATA);
+    const mutation = isMutationOperationForVersion(operation, credentials.version);
 
     try {
       const result = await withRetry(

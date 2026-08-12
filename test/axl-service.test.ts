@@ -238,6 +238,107 @@ describe('AxlAPIService.executeOperation', () => {
     }
   });
 
+  it.each([
+    ['ECONNRESET code', Object.assign(new Error('request failed'), { code: 'ECONNRESET' })],
+    [
+      'nested ETIMEDOUT cause',
+      new Error('request failed', {
+        cause: Object.assign(new Error('connection stalled'), { code: 'ETIMEDOUT' }),
+      }),
+    ],
+    [
+      'nested EPIPE errno',
+      new Error('request failed', {
+        cause: Object.assign(new Error('socket write failed'), { errno: 'EPIPE' }),
+      }),
+    ],
+    ['ENOTFOUND code', Object.assign(new Error('request failed'), { code: 'ENOTFOUND' })],
+    ['generic network code', Object.assign(new Error('request failed'), { code: 'ERR_NETWORK' })],
+    ['structured 503 status', Object.assign(new Error('request failed'), { statusCode: 503 })],
+  ])(
+    'classifies a mutating %s failure as outcome unknown after one transport attempt',
+    async (_label, transportError) => {
+      mockClient.executeOperation.mockRejectedValue(transportError);
+
+      const failure = await new AxlAPIService()
+        .executeOperation({ ...creds, version: '15.0' }, 'updatePhone', {
+          name: 'SEP111',
+          description: 'new',
+        })
+        .catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('preserves a structured SOAP business fault for a mutation without inviting a retry', async () => {
+    const fault = Object.assign(new Error('AXL validation failed'), {
+      response: { statusCode: 500 },
+      fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
+    });
+    mockClient.executeOperation.mockRejectedValue(fault);
+
+    const failure = await new AxlAPIService()
+      .executeOperation({ ...creds, version: '15.0' }, 'updatePhone', {
+        name: 'SEP111',
+        description: 'new',
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ message: 'AXL validation failed' });
+    expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+    expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['12.0', 'getAuthzKey'],
+    ['12.0', 'listAuthzKeys'],
+    ['15.0', 'getPhone'],
+    ['15.0', 'listPhone'],
+    ['15.0', 'executeSQLQueryInactive'],
+  ] as const)(
+    'retries selected-version read %s %s for a nested transport code',
+    async (version, operation) => {
+      const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+      const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      process.env.AXL_MCP_MAX_RETRIES = '1';
+      process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+      const transportError = new Error('request failed', {
+        cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }),
+      });
+      mockClient.executeOperation.mockRejectedValue(transportError);
+
+      try {
+        const failure = await new AxlAPIService()
+          .executeOperation({ ...creds, version }, operation, {})
+          .catch((error: unknown) => error);
+
+        expect(failure).toMatchObject({ message: 'request failed' });
+        expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+        expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+      } finally {
+        if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+        else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+        if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+        else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      }
+    }
+  );
+
+  it('classifies an operation unsupported by the selected version conservatively as a mutation', async () => {
+    mockClient.executeOperation.mockRejectedValue(
+      Object.assign(new Error('request failed'), { code: 'ECONNRESET' })
+    );
+
+    const failure = await new AxlAPIService()
+      .executeOperation({ ...creds, version: '15.0' }, 'getAuthzKey', {})
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+    expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['12.5', '14.0', '15.0'])(
     'retries executeSQLQueryInactive as a CUCM %s read and preserves the transport failure',
     async version => {

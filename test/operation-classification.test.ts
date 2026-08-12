@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isMutationOperation, isMutationOperationFromCatalog } from '../src/lib/mutation-grants';
+import {
+  isMutationOperation,
+  isMutationOperationForVersion,
+  isMutationOperationFromCatalog,
+} from '../src/lib/mutation-grants';
 import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 
 describe('catalog-aware AXL operation classification', () => {
@@ -40,5 +44,27 @@ describe('catalog-aware AXL operation classification', () => {
   it('classifies operations missing from the supplied catalog conservatively as mutations', () => {
     expect(isMutationOperationFromCatalog('vendorUnknownOperation', {})).toBe(true);
     expect(isMutationOperationFromCatalog('getVendorUnknown', {})).toBe(true);
+  });
+
+  it.each(['12.0', '15.0'] as const)(
+    'matches strict catalog classification for every generated CUCM %s operation',
+    async version => {
+      const artifacts = await loadAxlVersionArtifacts(version);
+
+      for (const [operation, metadata] of Object.entries(artifacts.operationMetadata)) {
+        expect(isMutationOperationForVersion(operation, version), operation).toBe(
+          isMutationOperation(operation, metadata)
+        );
+      }
+    }
+  );
+
+  it('uses the selected version and remains conservative for unsupported operations', () => {
+    expect(isMutationOperationForVersion('getAuthzKey', '12.0')).toBe(false);
+    expect(isMutationOperationForVersion('listAuthzKeys', '12.0')).toBe(false);
+    expect(isMutationOperationForVersion('getAuthzKey', '15.0')).toBe(true);
+    expect(isMutationOperationForVersion('getVendorUnknown', '15.0')).toBe(true);
+    expect(isMutationOperationForVersion('executeSQLQueryInactive', '12.0')).toBe(true);
+    expect(isMutationOperationForVersion('executeSQLQueryInactive', '15.0')).toBe(false);
   });
 });

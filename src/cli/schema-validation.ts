@@ -482,7 +482,8 @@ export function validateOperationInput(
     operation.choices,
     operation.sequences,
     operation.attributes,
-    enums
+    enums,
+    true
   );
   const result = schema.safeParse(input);
   if (!result.success) {

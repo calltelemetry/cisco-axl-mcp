@@ -18,7 +18,39 @@ describe('isRetryable', () => {
     expect(isRetryable(new Error('ECONNRESET'))).toBe(true);
     expect(isRetryable(new Error('ECONNREFUSED'))).toBe(true);
     expect(isRetryable(new Error('ETIMEDOUT'))).toBe(true);
+    expect(isRetryable(new Error('EPIPE'))).toBe(true);
+    expect(isRetryable(new Error('ENOTFOUND'))).toBe(true);
     expect(isRetryable(new Error('socket hang up'))).toBe(true);
+  });
+
+  it.each([
+    ['top-level code', Object.assign(new Error('request failed'), { code: 'ECONNRESET' })],
+    [
+      'nested cause code',
+      new Error('request failed', {
+        cause: Object.assign(new Error('transport closed'), { code: 'ETIMEDOUT' }),
+      }),
+    ],
+    ['errno', Object.assign(new Error('write failed'), { errno: 'EPIPE' })],
+    ['generic network code', Object.assign(new Error('request failed'), { code: 'ERR_NETWORK' })],
+    ['HTTP status', Object.assign(new Error('request failed'), { status: 503 })],
+    [
+      'nested response status',
+      Object.assign(new Error('request failed'), { response: { statusCode: 503 } }),
+    ],
+  ])('inspects structured %s fields', (_label, error) => {
+    expect(isRetryable(error)).toBe(true);
+  });
+
+  it.each([
+    Object.assign(new Error('request failed'), { status: 401 }),
+    Object.assign(new Error('request failed'), { response: { statusCode: 403 } }),
+    Object.assign(new Error('AXL validation failed'), {
+      response: { statusCode: 500 },
+      fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
+    }),
+  ])('keeps structured auth and SOAP business faults non-retryable', error => {
+    expect(isRetryable(error)).toBe(false);
   });
 
   it('returns true for rate limit errors', () => {
@@ -59,28 +91,45 @@ describe('isThrottleError', () => {
 describe('withRetry', () => {
   it('returns result on first success', async () => {
     const fn = vi.fn().mockResolvedValue('success');
-    const result = await withRetry(fn, { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 });
+    const result = await withRetry(fn, {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 10,
+      jitterFactor: 0,
+    });
     expect(result).toBe('success');
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it('retries on retryable error and succeeds', async () => {
-    const fn = vi.fn()
+    const fn = vi
+      .fn()
       .mockRejectedValueOnce(new Error('ECONNRESET'))
       .mockResolvedValue('recovered');
 
-    const result = await withRetry(fn, { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 });
+    const result = await withRetry(fn, {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 10,
+      jitterFactor: 0,
+    });
     expect(result).toBe('recovered');
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it('retries on 429 and succeeds on third attempt', async () => {
-    const fn = vi.fn()
+    const fn = vi
+      .fn()
       .mockRejectedValueOnce(new Error('429 Too Many Requests'))
       .mockRejectedValueOnce(new Error('429 Too Many Requests'))
       .mockResolvedValue('ok');
 
-    const result = await withRetry(fn, { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 });
+    const result = await withRetry(fn, {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 10,
+      jitterFactor: 0,
+    });
     expect(result).toBe('ok');
     expect(fn).toHaveBeenCalledTimes(3);
   });
@@ -104,12 +153,14 @@ describe('withRetry', () => {
   });
 
   it('calls onRetry callback for each retry', async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error('ETIMEDOUT'))
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(new Error('ETIMEDOUT')).mockResolvedValue('ok');
 
     const onRetry = vi.fn();
-    await withRetry(fn, { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 }, { onRetry });
+    await withRetry(
+      fn,
+      { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 },
+      { onRetry }
+    );
 
     expect(onRetry).toHaveBeenCalledTimes(1);
     expect(onRetry).toHaveBeenCalledWith(1, expect.any(Error), expect.any(Number));

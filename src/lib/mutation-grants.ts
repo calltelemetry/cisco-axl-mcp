@@ -8,6 +8,7 @@ import { isMutationOperation } from './operation-classification-core';
 
 export {
   isMutationOperation,
+  isMutationOperationForVersion,
   isMutationOperationFromCatalog,
 } from './operation-classification-core';
 

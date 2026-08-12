@@ -1,4 +1,5 @@
 import type { OperationMetadata } from '../types/generated/axl-generated-types';
+import { AXL_READ_ONLY_OPERATIONS_BY_VERSION } from '../types/generated/axl-operation-classification';
 
 const READ_ONLY_OTHER_OPERATIONS = new Set(['executeSQLQuery', 'executeSQLQueryInactive']);
 
@@ -16,4 +17,11 @@ export function isMutationOperationFromCatalog(
 ): boolean {
   const metadata = catalog[operation];
   return metadata ? isMutationOperation(operation, metadata) : true;
+}
+
+export function isMutationOperationForVersion(operation: string, version: string): boolean {
+  const readOnlyOperations = (
+    AXL_READ_ONLY_OPERATIONS_BY_VERSION as Record<string, readonly string[] | undefined>
+  )[version];
+  return readOnlyOperations?.includes(operation) !== true;
 }

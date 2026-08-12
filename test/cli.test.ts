@@ -412,6 +412,102 @@ describe('operation payload validation', () => {
     ).toEqual({ uuid: 'abc', customUserFields: {} });
   });
 
+  it('allows the selected operation root to choose an all-optional required branch', () => {
+    const schema: OperationSchema = {
+      verb: 'get',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        optionalPattern: {
+          type: 'string',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+        },
+        uuid: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+        },
+      },
+      choices: [{ minOccurs: 1, maxOccurs: 1, options: [['optionalPattern'], ['uuid']] }],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(validateOperationInput(schema, {}, {})).toEqual({});
+  });
+
+  it('still rejects a partial required branch at the selected operation root', () => {
+    const schema: OperationSchema = {
+      verb: 'get',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        requiredPattern: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+        },
+        optionalDescription: {
+          type: 'string',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+        },
+        uuid: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          choice: 0,
+        },
+      },
+      choices: [
+        {
+          minOccurs: 1,
+          maxOccurs: 1,
+          options: [['requiredPattern', 'optionalDescription'], ['uuid']],
+        },
+      ],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(() =>
+      validateOperationInput(schema, {}, { optionalDescription: 'partial' })
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([expect.objectContaining({ path: '$', kind: 'choice' })]),
+      })
+    );
+  });
+
+  it('accepts an empty CUCM 15 getBlockedLearnedPatterns root but rejects missing getPhone identity', async () => {
+    const artifacts = await loadAxlVersionArtifacts('15.0');
+
+    expect(
+      validateOperationInput(
+        artifacts.operationSchemas.getBlockedLearnedPatterns!,
+        artifacts.enums,
+        {}
+      )
+    ).toEqual({});
+    expect(() =>
+      validateOperationInput(artifacts.operationSchemas.getPhone!, artifacts.enums, {})
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([expect.objectContaining({ path: '$', kind: 'choice' })]),
+      })
+    );
+  });
+
   it('rejects a generated CUCM 15 addPhone payload missing occurrence-required fields', async () => {
     const artifacts = await loadAxlVersionArtifacts('15.0');
 

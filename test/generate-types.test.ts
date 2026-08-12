@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import * as wsdlSupport from '../src/types/generated/wsdl-support';
 import * as axlObjects from '../src/types/generated/axl-objects';
 import * as operationSchemas from '../src/types/generated/axl-operation-schemas';
+import * as operationClassification from '../src/types/generated/axl-operation-classification';
 import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 
 const EXPECTED_VERSIONS = ['11.0', '11.5', '12.0', '12.5', '14.0', '15.0'];
@@ -19,6 +20,7 @@ const GENERATED_FILES = [
   'src/types/generated/axl-generated-types.ts',
   'src/types/generated/axl-latest.ts',
   'src/types/generated/axl-objects.ts',
+  'src/types/generated/axl-operation-classification.ts',
   'src/types/generated/axl-operation-schemas.ts',
   'src/types/generated/axl-version-loader.ts',
   'src/types/generated/versions/axl-version-11-0.ts',
@@ -45,11 +47,13 @@ type GeneratedModules = {
   AXL_OPERATION_SCHEMAS_BY_VERSION?: Record<string, Record<string, any>>;
   AXL_OPERATION_METADATA_BY_VERSION?: Record<string, Record<string, unknown>>;
   AXL_OPERATION_SCHEMA_DIGESTS_BY_VERSION?: Record<string, string>;
+  AXL_READ_ONLY_OPERATIONS_BY_VERSION?: Record<string, readonly string[]>;
 };
 
 const support = wsdlSupport as GeneratedModules;
 const objects = axlObjects as GeneratedModules;
 const schemas = operationSchemas as GeneratedModules;
+const classification = operationClassification as GeneratedModules;
 const execFileAsync = promisify(execFile);
 
 function digest(content: Buffer): string {
@@ -263,6 +267,9 @@ describe('generated AXL version contract', () => {
     expect(Object.keys(objects.AXL_TOP_LEVEL_OBJECTS_BY_VERSION ?? {})).toEqual(EXPECTED_VERSIONS);
     expect(Object.keys(objects.AXL_OBJECT_OPERATIONS_BY_VERSION ?? {})).toEqual(EXPECTED_VERSIONS);
     expect(Object.keys(objects.AXL_ACTION_OPERATIONS_BY_VERSION ?? {})).toEqual(EXPECTED_VERSIONS);
+    expect(Object.keys(classification.AXL_READ_ONLY_OPERATIONS_BY_VERSION ?? {})).toEqual(
+      EXPECTED_VERSIONS
+    );
 
     for (const version of EXPECTED_VERSIONS) {
       expect(support.OPERATIONS_BY_VERSION?.[version]).toEqual(
@@ -282,6 +289,19 @@ describe('generated AXL version contract', () => {
         'other'
       );
       expect(objects.AXL_ACTION_OPERATIONS_BY_VERSION?.[version]).toHaveProperty('doDeviceReset');
+      expect(classification.AXL_READ_ONLY_OPERATIONS_BY_VERSION?.[version]).toEqual(
+        Object.entries(schemas.AXL_OPERATION_METADATA_BY_VERSION?.[version] ?? {})
+          .filter(([operation, metadata]) => {
+            const typed = metadata as { verb?: string; kind?: string };
+            return (
+              operation === 'executeSQLQuery' ||
+              operation === 'executeSQLQueryInactive' ||
+              (typed.kind === 'crud' && (typed.verb === 'get' || typed.verb === 'list'))
+            );
+          })
+          .map(([operation]) => operation)
+          .sort()
+      );
     }
   });
 

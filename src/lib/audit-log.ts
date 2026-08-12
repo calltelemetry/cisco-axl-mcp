@@ -39,7 +39,6 @@ function isCredentialKey(key: string): boolean {
   return (
     normalized === 'host' ||
     normalized.endsWith('host') ||
-    normalized === 'user' ||
     normalized.endsWith('username') ||
     normalized === 'login' ||
     normalized === 'auth' ||

@@ -208,6 +208,37 @@ describe('AxlAPIService.executeOperation', () => {
     expect(serialized).toContain('SEP111');
   });
 
+  it('preserves a getUser domain object while redacting its credential fields', async () => {
+    mockClient.executeOperation.mockResolvedValue({
+      return: {
+        user: {
+          userid: 'alice',
+          firstName: 'Alice',
+          lastName: 'Example',
+          username: 'directory-login',
+          password: 'directory-password',
+          nested: { authToken: 'directory-token' },
+        },
+      },
+    });
+
+    const service = new AxlAPIService();
+    const result = await service.executeOperation(creds, 'getUser', { userid: 'alice' });
+
+    expect(result).toEqual({
+      return: {
+        user: {
+          userid: 'alice',
+          firstName: 'Alice',
+          lastName: 'Example',
+          username: '***',
+          password: '***',
+          nested: { authToken: '***' },
+        },
+      },
+    });
+  });
+
   it('handles single object result (not wrapped in array)', async () => {
     mockClient.executeOperation.mockResolvedValue({
       return: { phone: { name: 'SEP111', model: 'Cisco 8845' } },
@@ -267,5 +298,44 @@ describe('AxlAPIService.listAll (integrated)', () => {
     const result = await service.listAll(creds, 'listPhone', {});
 
     expect(result.rows).toHaveLength(0);
+  });
+
+  it('paginates listUser rows without redacting the user response wrapper', async () => {
+    let callCount = 0;
+    mockClient.executeOperation.mockImplementation(async () => {
+      callCount++;
+      const offset = callCount === 1 ? 0 : 1000;
+      const count = callCount === 1 ? 1000 : 1;
+      return {
+        return: {
+          user: Array.from({ length: count }, (_, index) => ({
+            userid: `user-${offset + index}`,
+            displayName: `User ${offset + index}`,
+            username: `login-${offset + index}`,
+            password: `password-${offset + index}`,
+            auth: { token: `token-${offset + index}` },
+          })),
+        },
+      };
+    });
+
+    const service = new AxlAPIService();
+    const result = await service.listAll(creds, 'listUser', {
+      searchCriteria: { userid: '%' },
+    });
+
+    expect(result.rows).toHaveLength(1001);
+    expect(result.pages).toBe(2);
+    expect(result.truncated).toBe(false);
+    expect(result.rows[0]).toEqual({
+      userid: 'user-0',
+      displayName: 'User 0',
+      username: '***',
+      password: '***',
+      auth: '***',
+    });
+    expect(result.rows[1000]).toMatchObject({ userid: 'user-1000', displayName: 'User 1000' });
+    expect(JSON.stringify(result.rows)).not.toContain('password-');
+    expect(JSON.stringify(result.rows)).not.toContain('token-');
   });
 });

@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -54,8 +62,18 @@ describe('writeAuditEntry', () => {
   });
 
   it('creates separate files per host', () => {
-    writeAuditEntry('host-a', { ts: new Date().toISOString(), operation: 'addPhone', durationMs: 100, status: 'ok' });
-    writeAuditEntry('host-b', { ts: new Date().toISOString(), operation: 'getUser', durationMs: 200, status: 'ok' });
+    writeAuditEntry('host-a', {
+      ts: new Date().toISOString(),
+      operation: 'addPhone',
+      durationMs: 100,
+      status: 'ok',
+    });
+    writeAuditEntry('host-b', {
+      ts: new Date().toISOString(),
+      operation: 'getUser',
+      durationMs: 200,
+      status: 'ok',
+    });
 
     const linesA = readLogLines('host-a');
     const linesB = readLogLines('host-b');
@@ -66,8 +84,19 @@ describe('writeAuditEntry', () => {
   });
 
   it('appends multiple entries', () => {
-    writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op1', durationMs: 10, status: 'ok' });
-    writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op2', durationMs: 20, status: 'error', error: 'fail' });
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'op1',
+      durationMs: 10,
+      status: 'ok',
+    });
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'op2',
+      durationMs: 20,
+      status: 'error',
+      error: 'fail',
+    });
 
     const lines = readLogLines('host');
     expect(lines).toHaveLength(2);
@@ -96,6 +125,36 @@ describe('writeAuditEntry', () => {
     expect(lines[1]!.attempt).toBe(2);
     expect(lines[1]!.error).toBe('timeout');
   });
+
+  it('creates audit directories and files with owner-only permissions', () => {
+    const nestedAuditDir = join(tempDir, 'private', 'audit');
+    setAuditDir(nestedAuditDir);
+
+    writeAuditEntry('secure-host', {
+      ts: new Date().toISOString(),
+      operation: 'getPhone',
+      durationMs: 1,
+      status: 'ok',
+    });
+
+    expect(statSync(nestedAuditDir).mode & 0o777).toBe(0o700);
+    expect(statSync(join(nestedAuditDir, 'secure-host.jsonl')).mode & 0o777).toBe(0o600);
+  });
+
+  it('redacts direct audit entries before persistence', () => {
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'getPhone',
+      durationMs: 1,
+      status: 'error',
+      error: 'SOAP fault: Password=plain-text-secret',
+      response: { Authorization: 'Bearer response-token' },
+    });
+
+    const persisted = JSON.stringify(readLogLines('host')[0]);
+    expect(persisted).not.toContain('plain-text-secret');
+    expect(persisted).not.toContain('response-token');
+  });
 });
 
 describe('getRecentThrottleCount', () => {
@@ -105,9 +164,26 @@ describe('getRecentThrottleCount', () => {
 
   it('counts recent throttle events', () => {
     const now = new Date();
-    writeAuditEntry('host', { ts: now.toISOString(), operation: 'op1', durationMs: 10, status: 'throttled', error: 'rate limit' });
-    writeAuditEntry('host', { ts: now.toISOString(), operation: 'op2', durationMs: 20, status: 'ok' });
-    writeAuditEntry('host', { ts: now.toISOString(), operation: 'op3', durationMs: 30, status: 'throttled', error: 'rate limit' });
+    writeAuditEntry('host', {
+      ts: now.toISOString(),
+      operation: 'op1',
+      durationMs: 10,
+      status: 'throttled',
+      error: 'rate limit',
+    });
+    writeAuditEntry('host', {
+      ts: now.toISOString(),
+      operation: 'op2',
+      durationMs: 20,
+      status: 'ok',
+    });
+    writeAuditEntry('host', {
+      ts: now.toISOString(),
+      operation: 'op3',
+      durationMs: 30,
+      status: 'throttled',
+      error: 'rate limit',
+    });
 
     expect(getRecentThrottleCount('host')).toBe(2);
   });
@@ -120,10 +196,24 @@ describe('getRecentThrottleCount', () => {
     const safe = 'host';
     const filePath = join(tempDir, `${safe}.jsonl`);
     mkdirSync(tempDir, { recursive: true });
-    writeFileSync(filePath, JSON.stringify({ ts: old.toISOString(), operation: 'op1', durationMs: 10, status: 'throttled' }) + '\n');
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        ts: old.toISOString(),
+        operation: 'op1',
+        durationMs: 10,
+        status: 'throttled',
+      }) + '\n'
+    );
 
     // Write recent entry via API
-    writeAuditEntry('host', { ts: recent.toISOString(), operation: 'op2', durationMs: 20, status: 'throttled', error: 'limit' });
+    writeAuditEntry('host', {
+      ts: recent.toISOString(),
+      operation: 'op2',
+      durationMs: 20,
+      status: 'throttled',
+      error: 'limit',
+    });
 
     expect(getRecentThrottleCount('host')).toBe(1);
   });
@@ -135,19 +225,39 @@ describe('getAdaptiveDelay', () => {
   });
 
   it('returns 2000ms after 1 throttle', () => {
-    writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op', durationMs: 10, status: 'throttled' });
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'op',
+      durationMs: 10,
+      status: 'throttled',
+    });
     expect(getAdaptiveDelay('host')).toBe(2000);
   });
 
   it('returns 5000ms after 2 throttles', () => {
-    writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op', durationMs: 10, status: 'throttled' });
-    writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op', durationMs: 10, status: 'throttled' });
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'op',
+      durationMs: 10,
+      status: 'throttled',
+    });
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'op',
+      durationMs: 10,
+      status: 'throttled',
+    });
     expect(getAdaptiveDelay('host')).toBe(5000);
   });
 
   it('returns 10000ms after 3+ throttles', () => {
     for (let i = 0; i < 4; i++) {
-      writeAuditEntry('host', { ts: new Date().toISOString(), operation: 'op', durationMs: 10, status: 'throttled' });
+      writeAuditEntry('host', {
+        ts: new Date().toISOString(),
+        operation: 'op',
+        durationMs: 10,
+        status: 'throttled',
+      });
     }
     expect(getAdaptiveDelay('host')).toBe(10000);
   });
@@ -195,15 +305,31 @@ describe('recordOperation', () => {
     expect(entry.status).toBe('error');
   });
 
-  it('includes redacted request at default log level', () => {
+  it('defaults to metadata-only records', () => {
     recordOperation('host', 'getPhone', Date.now(), {
       ok: true,
       request: { name: 'SEP111', cucm_password: 'secret123', cucm_username: 'admin' },
     });
 
     const lines = readLogLines('host');
-    expect(lines[0]!.request).toEqual({ name: 'SEP111', cucm_password: '***', cucm_username: '***' });
+    expect(lines[0]!.request).toBeUndefined();
     expect(lines[0]!.response).toBeUndefined();
+  });
+
+  it('redacts both request and response when payload logging is explicitly enabled', () => {
+    process.env.AXL_MCP_AUDIT_LOG = 'full';
+    recordOperation('host', 'getPhone', Date.now(), {
+      ok: false,
+      error: 'SOAP fault password=secret123',
+      request: { Password: 'secret123' },
+      response: { fault: '<Password>secret123</Password>', token: 'response-token' },
+      sensitiveValues: ['secret123', 'response-token'],
+    });
+
+    const persisted = JSON.stringify(readLogLines('host')[0]);
+    expect(persisted).not.toContain('secret123');
+    expect(persisted).not.toContain('response-token');
+    expect(persisted).toContain('***');
   });
 
   it('includes response at full log level', () => {
@@ -279,12 +405,37 @@ describe('redactCredentials', () => {
     expect(redactCredentials('hello')).toBe('hello');
     expect(redactCredentials(42)).toBe(42);
   });
+
+  it('redacts authorization values embedded in unstructured strings', () => {
+    const redacted = redactCredentials('SOAP fault Authorization: Bearer response-token');
+    expect(redacted).not.toContain('response-token');
+    expect(redacted).toContain('***');
+  });
+
+  it('redacts case variants, credential-like values, URLs, XML faults, errors, and arrays recursively', () => {
+    const fault = new Error(
+      'POST https://admin:secret123@cucm.example.test/axl?token=response-token failed: <Password>secret123</Password>'
+    );
+    Object.assign(fault, {
+      detail: {
+        PASSWORD: 'secret123',
+        nested: [{ api_key: 'response-token' }, { Authorization: 'Bearer response-token' }],
+      },
+    });
+
+    const redacted = redactCredentials(fault, ['admin', 'secret123', 'response-token']);
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain('admin');
+    expect(serialized).not.toContain('secret123');
+    expect(serialized).not.toContain('response-token');
+    expect(serialized).toContain('***');
+  });
 });
 
 describe('getAuditLogLevel', () => {
-  it('defaults to request', () => {
+  it('defaults to metadata', () => {
     delete process.env.AXL_MCP_AUDIT_LOG;
-    expect(getAuditLogLevel()).toBe('request');
+    expect(getAuditLogLevel()).toBe('metadata');
   });
 
   it('returns off for false/0/none/off', () => {

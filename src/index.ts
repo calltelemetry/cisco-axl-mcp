@@ -1,17 +1,27 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
-// Default: permissive TLS (accept self-signed). CUCM labs commonly use self-signed certs.
-// Opt into strict verification with:
+// Preserve the MCP's legacy self-signed-certificate default as an explicit,
+// per-client setting. Opt into strict verification with:
 // - CUCM_AXL_TLS_MODE=strict (recommended for prod)
 // - MCP_TLS_MODE=strict
-const tlsMode = (process.env.CUCM_AXL_TLS_MODE || process.env.MCP_TLS_MODE || '').toLowerCase();
-const strictTls = tlsMode === 'strict' || tlsMode === 'verify';
-if (!strictTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+const configuredTlsMode = (
+  process.env.CUCM_AXL_TLS_MODE ||
+  process.env.MCP_TLS_MODE ||
+  ''
+).toLowerCase();
+const mcpTlsMode =
+  configuredTlsMode === 'strict' || configuredTlsMode === 'verify' ? 'secure' : 'insecure';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import { AxlAPIService } from './services/axl/index';
 import { getTools, handleTool } from './tools/index';
 import { toMcpError } from './types/axl/errors';
@@ -33,7 +43,7 @@ class CiscoAxlMcpServer {
       }
     );
 
-    this.axl = new AxlAPIService();
+    this.axl = new AxlAPIService(mcpTlsMode);
     this.setupToolHandlers();
 
     this.server.onerror = error => console.error('[MCP Error]', error);
@@ -46,24 +56,30 @@ class CiscoAxlMcpServer {
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getTools() }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
-      try {
-        const { name, arguments: rawArgs } = request.params;
-        const args = rawArgs ?? {};
+    this.server.setRequestHandler(
+      CallToolRequestSchema,
+      async (request): Promise<CallToolResult> => {
+        try {
+          const { name, arguments: rawArgs } = request.params;
+          const args = rawArgs ?? {};
 
-        const result = await handleTool(name, args, this.axl);
-        if (result === null) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        return result as CallToolResult;
-      } catch (error) {
-        throw toMcpError(error);
+          const result = await handleTool(name, args, this.axl);
+          if (result === null)
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+          return result as CallToolResult;
+        } catch (error) {
+          throw toMcpError(error);
+        }
       }
-    });
+    );
   }
 
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Cisco AXL MCP server running on stdio');
+    console.error(
+      `Cisco AXL MCP server running on stdio (TLS verification: ${mcpTlsMode === 'secure' ? 'enabled' : 'disabled'})`
+    );
   }
 }
 

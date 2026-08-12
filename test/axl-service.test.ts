@@ -16,8 +16,8 @@ vi.mock('../src/lib/axl-client', () => {
 });
 
 import { AxlAPIService } from '../src/services/axl/index';
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { __mockClient: mockClient } = await import('../src/lib/axl-client') as any;
+const { __mockClient: mockClient, getAxlClient: mockGetAxlClient } =
+  (await import('../src/lib/axl-client')) as any;
 
 const creds = { host: 'test-host', username: 'admin', password: 'pass', version: '14.0' };
 let tempDir: string;
@@ -34,11 +34,26 @@ afterEach(() => {
 });
 
 describe('AxlAPIService.executeOperation', () => {
+  it('passes the configured TLS mode through the service boundary', async () => {
+    const ServiceWithTlsConstructor = AxlAPIService as unknown as new (
+      tlsMode: 'secure' | 'insecure'
+    ) => AxlAPIService;
+    const service = new ServiceWithTlsConstructor('insecure');
+
+    await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+
+    expect(mockGetAxlClient).toHaveBeenCalledWith(creds, 'insecure');
+  });
+
   it('calls getAxlClient and returns result', async () => {
     const service = new AxlAPIService();
     const result = await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
     expect(result).toEqual({ return: { phone: [{ name: 'SEP111' }] } });
-    expect(mockClient.executeOperation).toHaveBeenCalledWith('getPhone', { name: 'SEP111' }, undefined);
+    expect(mockClient.executeOperation).toHaveBeenCalledWith(
+      'getPhone',
+      { name: 'SEP111' },
+      undefined
+    );
   });
 
   it('records successful operation to audit log', async () => {
@@ -48,7 +63,10 @@ describe('AxlAPIService.executeOperation', () => {
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
 
     expect(entries.length).toBeGreaterThanOrEqual(1);
     const last = entries[entries.length - 1];
@@ -61,12 +79,17 @@ describe('AxlAPIService.executeOperation', () => {
     mockClient.executeOperation.mockRejectedValue(new Error('401 Unauthorized'));
 
     const service = new AxlAPIService();
-    await expect(service.executeOperation(creds, 'getPhone', { name: 'X' })).rejects.toThrow('401 Unauthorized');
+    await expect(service.executeOperation(creds, 'getPhone', { name: 'X' })).rejects.toThrow(
+      '401 Unauthorized'
+    );
 
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
 
     const last = entries[entries.length - 1];
     expect(last.status).toBe('error');
@@ -79,7 +102,9 @@ describe('AxlAPIService.executeOperation', () => {
     process.env.AXL_MCP_MAX_RETRIES = '1';
     process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
 
-    mockClient.executeOperation.mockRejectedValue(new Error('Maximum AXL Memory Allocation Consumed'));
+    mockClient.executeOperation.mockRejectedValue(
+      new Error('Maximum AXL Memory Allocation Consumed')
+    );
 
     const service = new AxlAPIService();
     await expect(service.executeOperation(creds, 'listPhone', {})).rejects.toThrow('Memory');
@@ -87,7 +112,10 @@ describe('AxlAPIService.executeOperation', () => {
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
 
     const throttled = entries.filter((e: { status: string }) => e.status === 'throttled');
     expect(throttled.length).toBeGreaterThanOrEqual(1);
@@ -135,7 +163,10 @@ describe('AxlAPIService.executeOperation', () => {
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
     const last = entries[entries.length - 1];
     expect(last.rows).toBe(3);
   });
@@ -149,9 +180,32 @@ describe('AxlAPIService.executeOperation', () => {
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
     const last = entries[entries.length - 1];
     expect(last.rows).toBeUndefined();
+  });
+
+  it('redacts credential fields in responses returned to MCP callers', async () => {
+    mockClient.executeOperation.mockResolvedValue({
+      return: {
+        phone: {
+          name: 'SEP111',
+          Password: 'response-password',
+          nested: [{ api_token: 'response-token' }],
+        },
+      },
+    });
+
+    const service = new AxlAPIService();
+    const result = await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain('response-password');
+    expect(serialized).not.toContain('response-token');
+    expect(serialized).toContain('SEP111');
   });
 
   it('handles single object result (not wrapped in array)', async () => {
@@ -166,7 +220,10 @@ describe('AxlAPIService.executeOperation', () => {
     const { readFileSync } = await import('node:fs');
     const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
-    const entries = content.trim().split('\n').map(l => JSON.parse(l));
+    const entries = content
+      .trim()
+      .split('\n')
+      .map(l => JSON.parse(l));
     const last = entries[entries.length - 1];
     expect(last.rows).toBe(1); // single object counted as 1 row
   });
@@ -180,7 +237,9 @@ describe('AxlAPIService.listAll (integrated)', () => {
       if (callCount === 1) {
         return { return: { phone: Array.from({ length: 1000 }, (_, i) => ({ name: `P${i}` })) } };
       }
-      return { return: { phone: Array.from({ length: 50 }, (_, i) => ({ name: `P${1000 + i}` })) } };
+      return {
+        return: { phone: Array.from({ length: 50 }, (_, i) => ({ name: `P${1000 + i}` })) },
+      };
     });
 
     const service = new AxlAPIService();

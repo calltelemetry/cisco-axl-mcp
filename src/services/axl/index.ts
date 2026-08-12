@@ -1,24 +1,34 @@
 import type { CucmCredentials } from '../../types/credentials';
-import type { ExecuteOperationOptions } from '../../lib/axl-client';
+import type { ExecuteOperationOptions, TlsMode } from '../../lib/axl-client';
 import { getAxlClient } from '../../lib/axl-client';
 import { withRetry, isThrottleError } from '../../lib/retry';
-import { getAdaptiveDelay, recordOperation } from '../../lib/audit-log';
+import {
+  getAdaptiveDelay,
+  recordOperation,
+  redactCredentials,
+  sanitizeError,
+} from '../../lib/audit-log';
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export class AxlAPIService {
+  constructor(private readonly defaultTlsMode: TlsMode = 'secure') {}
+
   async executeOperation(
     credentials: CucmCredentials,
     operation: string,
     tags: unknown,
-    opts?: ExecuteOperationOptions
+    opts?: ExecuteOperationOptions,
+    tlsMode: TlsMode = this.defaultTlsMode
   ): Promise<unknown> {
     // Apply adaptive delay based on recent throttle history
     const adaptiveDelay = getAdaptiveDelay(credentials.host);
     if (adaptiveDelay > 0) {
-      console.error(`[AXL Rate] Adaptive delay ${adaptiveDelay}ms for ${credentials.host} (recent throttle events detected)`);
+      console.error(
+        `[AXL Rate] Adaptive delay ${adaptiveDelay}ms for ${credentials.host} (recent throttle events detected)`
+      );
       await delay(adaptiveDelay);
     }
 
@@ -26,7 +36,7 @@ export class AxlAPIService {
 
     try {
       const result = await withRetry(
-        () => getAxlClient(credentials).executeOperation(operation, tags, opts),
+        () => getAxlClient(credentials, tlsMode).executeOperation(operation, tags, opts),
         undefined,
         {
           onRetry: (attempt, error) => {
@@ -37,6 +47,7 @@ export class AxlAPIService {
               error: errMsg,
               attempt,
               request: tags,
+              sensitiveValues: [credentials.password, credentials.username],
             });
           },
         }
@@ -44,9 +55,16 @@ export class AxlAPIService {
 
       // Count rows if result looks like a list response
       const rows = countResultRows(result);
-      recordOperation(credentials.host, operation, startTime, { ok: true, rows, request: tags, response: result });
+      const safeResult = redactCredentials(result, [credentials.password, credentials.username]);
+      recordOperation(credentials.host, operation, startTime, {
+        ok: true,
+        rows,
+        request: tags,
+        response: safeResult,
+        sensitiveValues: [credentials.password, credentials.username],
+      });
 
-      return result;
+      return safeResult;
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       recordOperation(credentials.host, operation, startTime, {
@@ -54,8 +72,9 @@ export class AxlAPIService {
         throttled: isThrottleError(error),
         error: errMsg,
         request: tags,
+        sensitiveValues: [credentials.password, credentials.username],
       });
-      throw error;
+      throw sanitizeError(error, [credentials.password, credentials.username]);
     }
   }
 
@@ -64,6 +83,7 @@ export class AxlAPIService {
     operation: string,
     data: Record<string, unknown>,
     opts?: ExecuteOperationOptions,
+    tlsMode: TlsMode = this.defaultTlsMode
   ): Promise<{ rows: unknown[]; totalFetched: number; pages: number; truncated: boolean }> {
     const maxRows = parseInt(process.env.AXL_MCP_MAX_AUTOPAGINATE ?? '10000', 10) || 10000;
     const pageSize = 1000;
@@ -78,7 +98,7 @@ export class AxlAPIService {
         first: String(pageSize),
       };
 
-      const result = await this.executeOperation(credentials, operation, pageData, opts);
+      const result = await this.executeOperation(credentials, operation, pageData, opts, tlsMode);
       const pageRows = extractRows(result);
 
       allRows.push(...pageRows);

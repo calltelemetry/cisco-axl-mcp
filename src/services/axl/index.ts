@@ -55,7 +55,10 @@ export class AxlAPIService {
 
       // Count rows if result looks like a list response
       const rows = countResultRows(result);
-      const safeResult = redactCredentials(result, [credentials.password, credentials.username]);
+      const safeResult = redactCredentials(result, [credentials.password, credentials.username], {
+        kind: 'axl-response',
+        operation,
+      });
       recordOperation(credentials.host, operation, startTime, {
         ok: true,
         rows,

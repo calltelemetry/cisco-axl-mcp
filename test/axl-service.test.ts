@@ -217,7 +217,7 @@ describe('AxlAPIService.executeOperation', () => {
           lastName: 'Example',
           username: 'directory-login',
           password: 'directory-password',
-          nested: { authToken: 'directory-token' },
+          nested: { authToken: 'directory-token', user: 'nested-user-credential' },
         },
       },
     });
@@ -233,11 +233,27 @@ describe('AxlAPIService.executeOperation', () => {
           lastName: 'Example',
           username: '***',
           password: '***',
-          nested: { authToken: '***' },
+          nested: { authToken: '***', user: '***' },
         },
       },
     });
   });
+
+  it.each([
+    ['getUser', { return: { user: 'scalar-user-credential' } }],
+    ['listUser', { return: { user: 123456 } }],
+    ['getPhone', { return: { user: { userid: 'non-axl-user-object' } } }],
+  ] as const)(
+    'redacts user values without the getUser/listUser wrapper shape for %s',
+    async (operation, response) => {
+      mockClient.executeOperation.mockResolvedValue(response);
+
+      const service = new AxlAPIService();
+      const result = await service.executeOperation(creds, operation, {});
+
+      expect(result).toEqual({ return: { user: '***' } });
+    }
+  );
 
   it('handles single object result (not wrapped in array)', async () => {
     mockClient.executeOperation.mockResolvedValue({
@@ -314,6 +330,7 @@ describe('AxlAPIService.listAll (integrated)', () => {
             username: `login-${offset + index}`,
             password: `password-${offset + index}`,
             auth: { token: `token-${offset + index}` },
+            nested: { user: `credential-user-${offset + index}` },
           })),
         },
       };
@@ -333,9 +350,11 @@ describe('AxlAPIService.listAll (integrated)', () => {
       username: '***',
       password: '***',
       auth: '***',
+      nested: { user: '***' },
     });
     expect(result.rows[1000]).toMatchObject({ userid: 'user-1000', displayName: 'User 1000' });
     expect(JSON.stringify(result.rows)).not.toContain('password-');
     expect(JSON.stringify(result.rows)).not.toContain('token-');
+    expect(JSON.stringify(result.rows)).not.toContain('credential-user-');
   });
 });

@@ -155,6 +155,27 @@ describe('writeAuditEntry', () => {
     expect(persisted).not.toContain('plain-text-secret');
     expect(persisted).not.toContain('response-token');
   });
+
+  it('redacts scalar user aliases from direct audit entries', () => {
+    writeAuditEntry('host', {
+      ts: new Date().toISOString(),
+      operation: 'getPhone',
+      durationMs: 1,
+      status: 'error',
+      error: 'SOAP fault user=error-user',
+      request: { user: 'request-user' },
+      response: {
+        user: 'response-user',
+        nested: { user: 'nested-response-user' },
+      },
+    });
+
+    const persisted = JSON.stringify(readLogLines('host')[0]);
+    for (const secret of ['error-user', 'request-user', 'response-user', 'nested-response-user']) {
+      expect(persisted).not.toContain(secret);
+    }
+    expect(persisted).toContain('***');
+  });
 });
 
 describe('getRecentThrottleCount', () => {
@@ -345,6 +366,33 @@ describe('recordOperation', () => {
     expect(lines[0]!.response).toEqual({ return: { phone: { name: 'SEP111', model: '8845' } } });
   });
 
+  it.each([
+    ['getUser', { userid: 'alice', username: 'directory-login', nested: { user: 'nested-user' } }],
+    [
+      'listUser',
+      [
+        { userid: 'alice', password: 'directory-password' },
+        { userid: 'bob', nested: { user: 'nested-user' } },
+      ],
+    ],
+  ] as const)('preserves the %s AXL response wrapper in full audit records', (operation, user) => {
+    process.env.AXL_MCP_AUDIT_LOG = 'full';
+    recordOperation('host', operation, Date.now(), {
+      ok: true,
+      response: { return: { user } },
+    });
+
+    const response = readLogLines('host')[0]!.response as {
+      return: { user: unknown };
+    };
+    const persisted = JSON.stringify(response);
+    expect(response.return.user).not.toBe('***');
+    expect(persisted).toContain('alice');
+    expect(persisted).not.toContain('directory-login');
+    expect(persisted).not.toContain('directory-password');
+    expect(persisted).not.toContain('nested-user');
+  });
+
   it('excludes request at metadata log level', () => {
     process.env.AXL_MCP_AUDIT_LOG = 'metadata';
     recordOperation('host', 'getPhone', Date.now(), {
@@ -370,6 +418,48 @@ describe('recordOperation', () => {
 });
 
 describe('redactCredentials', () => {
+  it('redacts scalar user aliases in general objects, arrays, and nested errors', () => {
+    const fault = new Error('request failed');
+    Object.assign(fault, {
+      detail: {
+        user: 'error-user',
+        nested: [{ user: 'nested-error-user' }],
+      },
+    });
+
+    const result = redactCredentials({
+      user: 'top-level-user',
+      nested: { user: 'nested-user' },
+      array: [{ user: 'array-user' }],
+      fault,
+    });
+    const serialized = JSON.stringify(result);
+
+    for (const secret of [
+      'top-level-user',
+      'nested-user',
+      'array-user',
+      'error-user',
+      'nested-error-user',
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(serialized).toContain('***');
+  });
+
+  it('redacts scalar user aliases in JSON, escaped JSON, XML, and fault text', () => {
+    const redacted = String(
+      redactCredentials(
+        'SOAP fault {"user":"json-user"} {\\"user\\":\\"escaped-user\\"} <user>xml-user</user> user=fault-user'
+      )
+    );
+
+    for (const secret of ['json-user', 'escaped-user', 'xml-user', 'fault-user']) {
+      expect(redacted).not.toContain(secret);
+    }
+    expect(redacted).toContain('***');
+  });
+
   it('redacts password and username fields', () => {
     const result = redactCredentials({
       cucm_password: 'secret',

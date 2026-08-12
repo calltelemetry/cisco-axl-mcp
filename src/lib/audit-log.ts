@@ -24,6 +24,11 @@ export interface AuditEntry {
 
 export type AuditLogLevel = 'off' | 'metadata' | 'request' | 'full';
 
+export type RedactionContext =
+  | { kind: 'general' }
+  | { kind: 'axl-response'; operation: string }
+  | { kind: 'audit-entry'; operation: string };
+
 /** Metadata-only is the safe default; payload logging must be explicitly enabled. */
 export function getAuditLogLevel(): AuditLogLevel {
   const val = (process.env.AXL_MCP_AUDIT_LOG ?? 'metadata').toLowerCase().trim();
@@ -39,6 +44,7 @@ function isCredentialKey(key: string): boolean {
   return (
     normalized === 'host' ||
     normalized.endsWith('host') ||
+    normalized === 'user' ||
     normalized.endsWith('username') ||
     normalized === 'login' ||
     normalized === 'auth' ||
@@ -88,6 +94,7 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   }
 
   redacted = redacted.replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi, '$1***:***@');
+  redacted = redacted.replace(/(<((?:[a-z0-9_-]*:)?user)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, '$1***$3');
   redacted = redacted.replace(
     /(<((?:[a-z0-9_-]*:)?[a-z0-9_-]*(?:password|passwd|pwd|passcode|pass|secret|token|authorization|authentication|auth|api[_-]?key|access[_-]?key|secret[_-]?key|username|login|credential|creds)[a-z0-9_-]*)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi,
     '$1***$3'
@@ -99,17 +106,44 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   );
   redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
   redacted = redacted.replace(
-    /(\b(?:password|passwd|pwd|passcode|pass|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
+    /(\b(?:password|passwd|pwd|passcode|pass|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
     '$1***'
   );
   return redacted;
 }
 
+function isPlainObjectOrArray(value: unknown): value is Record<string, unknown> | unknown[] {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isAxlUserResponseWrapper(
+  key: string,
+  value: unknown,
+  path: readonly string[],
+  context: RedactionContext
+): boolean {
+  if (key !== 'user' || !isPlainObjectOrArray(value)) return false;
+  if (context.kind === 'general') return false;
+  if (context.operation !== 'getUser' && context.operation !== 'listUser') return false;
+
+  if (context.kind === 'axl-response') {
+    return path.length === 1 && path[0] === 'return';
+  }
+  return path.length === 2 && path[0] === 'response' && path[1] === 'return';
+}
+
 /** Deep-clone and recursively redact credential keys and credential-like values. */
-export function redactCredentials(obj: unknown, sensitiveValues: readonly string[] = []): unknown {
+export function redactCredentials(
+  obj: unknown,
+  sensitiveValues: readonly string[] = [],
+  context: RedactionContext = { kind: 'general' }
+): unknown {
   const seen = new WeakSet<object>();
 
-  const redact = (value: unknown): unknown => {
+  const redact = (value: unknown, path: readonly string[]): unknown => {
     if (value === null || value === undefined) return value;
     if (typeof value === 'string') return redactString(value, sensitiveValues);
     if (typeof value !== 'object') return value;
@@ -117,7 +151,8 @@ export function redactCredentials(obj: unknown, sensitiveValues: readonly string
 
     seen.add(value);
     try {
-      if (Array.isArray(value)) return value.map(redact);
+      if (Array.isArray(value))
+        return value.map((item, index) => redact(item, [...path, String(index)]));
       if (value instanceof Date) return value.toISOString();
 
       const result: Record<string, unknown> = {};
@@ -125,10 +160,14 @@ export function redactCredentials(obj: unknown, sensitiveValues: readonly string
         result.name = value.name;
         result.message = redactString(value.message, sensitiveValues);
         if (value.stack) result.stack = redactString(value.stack, sensitiveValues);
-        if (value.cause !== undefined) result.cause = redact(value.cause);
+        if (value.cause !== undefined) result.cause = redact(value.cause, [...path, 'cause']);
       }
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        result[key] = isCredentialKey(key) ? '***' : redact(item);
+        const itemPath = [...path, key];
+        result[key] =
+          isCredentialKey(key) && !isAxlUserResponseWrapper(key, item, path, context)
+            ? '***'
+            : redact(item, itemPath);
       }
       return result;
     } finally {
@@ -136,7 +175,7 @@ export function redactCredentials(obj: unknown, sensitiveValues: readonly string
     }
   };
 
-  return redact(obj);
+  return redact(obj, []);
 }
 
 export function sanitizeError(error: unknown, sensitiveValues: readonly string[] = []): Error {
@@ -187,7 +226,10 @@ function hostFilePath(host: string): string {
 export function writeAuditEntry(host: string, entry: AuditEntry): void {
   ensureDir(auditDir);
   const filePath = hostFilePath(host);
-  const line = JSON.stringify(redactCredentials(entry)) + '\n';
+  const line =
+    JSON.stringify(
+      redactCredentials(entry, [], { kind: 'audit-entry', operation: entry.operation })
+    ) + '\n';
   appendFileSync(filePath, line, { encoding: 'utf-8', mode: 0o600 });
   chmodSync(filePath, 0o600);
   rotateIfNeeded(filePath);
@@ -278,7 +320,10 @@ export function recordOperation(
     entry.request = redactCredentials(result.request, result.sensitiveValues);
   }
   if (level === 'full' && result.response !== undefined) {
-    entry.response = redactCredentials(result.response, result.sensitiveValues);
+    entry.response = redactCredentials(result.response, result.sensitiveValues, {
+      kind: 'axl-response',
+      operation,
+    });
   }
 
   writeAuditEntry(host, entry);

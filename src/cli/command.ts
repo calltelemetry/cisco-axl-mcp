@@ -54,6 +54,12 @@ const NON_EMPTY = z
   .min(1)
   .max(256)
   .refine(value => !hasControlCharacters(value), 'Control characters are not allowed');
+const EXACT_NON_EMPTY = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine(value => value.trim().length > 0, 'Value cannot be only whitespace')
+  .refine(value => !hasControlCharacters(value), 'Control characters are not allowed');
 const COMMON_FIELDS = {
   version: NON_EMPTY.optional(),
   json: z.literal(true).optional(),
@@ -79,7 +85,7 @@ const CLI_COMMAND_SCHEMA = z.discriminatedUnion('command', [
       data: z.string().optional(),
       autoPage: z.literal(true).optional(),
       write: z.literal(true).optional(),
-      confirm: NON_EMPTY.optional(),
+      confirm: EXACT_NON_EMPTY.optional(),
     })
     .strict(),
   z
@@ -89,7 +95,7 @@ const CLI_COMMAND_SCHEMA = z.discriminatedUnion('command', [
       action: z.enum(['query', 'update']),
       file: NON_EMPTY.optional(),
       write: z.literal(true).optional(),
-      confirm: NON_EMPTY.optional(),
+      confirm: EXACT_NON_EMPTY.optional(),
     })
     .strict(),
 ]);

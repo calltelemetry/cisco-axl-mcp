@@ -80,7 +80,7 @@ export interface RetryCallbacks {
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options?: Partial<RetryOptions>,
-  callbacks?: RetryCallbacks,
+  callbacks?: RetryCallbacks
 ): Promise<T> {
   const opts = { ...getDefaultOptions(), ...options };
   let lastError: unknown;
@@ -97,9 +97,6 @@ export async function withRetry<T>(
 
       const delayMs = calculateDelay(attempt, opts);
       callbacks?.onRetry?.(attempt + 1, error, delayMs);
-      console.error(
-        `[AXL Retry] attempt ${attempt + 1}/${opts.maxRetries} after ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`
-      );
       await delay(delayMs);
     }
   }

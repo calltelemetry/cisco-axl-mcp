@@ -1,19 +1,22 @@
 import { z } from 'zod';
 import type {
+  AttributeSchema,
   ChoiceSchema,
   FieldSchema,
   Occurs,
   OperationSchema,
+  SequenceSchema,
 } from '../types/generated/axl-generated-types';
 import { CliError } from './output';
 
 export interface CliValidationDetail {
   path: string;
-  kind: 'required' | 'type' | 'enum' | 'choice' | 'array' | 'unknown';
+  kind: 'required' | 'type' | 'enum' | 'choice' | 'sequence' | 'attribute' | 'array' | 'unknown';
   message: string;
   expected?: string;
   enum?: string[];
   choice?: { minOccurs: number; maxOccurs: Occurs; options: string[][] };
+  sequence?: { minOccurs: number; maxOccurs: Occurs; fields: string[]; missing: string[] };
   array?: { minItems: number; maxItems: Occurs };
   keys?: string[];
 }
@@ -29,6 +32,13 @@ function allowedEnum(field: FieldSchema, enums: Record<string, string[]>): strin
   return field.enum ?? (field.enumType ? enums[field.enumType] : undefined);
 }
 
+function allowedAttributeEnum(
+  attribute: AttributeSchema,
+  enums: Record<string, string[]>
+): string[] | undefined {
+  return attribute.enum ?? (attribute.enumType ? enums[attribute.enumType] : undefined);
+}
+
 function choiceIssue(choice: ChoiceSchema): Record<string, unknown> {
   return {
     kind: 'choice',
@@ -40,19 +50,93 @@ function choiceIssue(choice: ChoiceSchema): Record<string, unknown> {
   };
 }
 
+function hasOwn(value: object, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, name);
+}
+
+function belongsToChoice(name: string, choices: ChoiceSchema[]): boolean {
+  return choices.some(choice => choice.options.some(option => option.includes(name)));
+}
+
+function belongsToSequence(name: string, sequences: SequenceSchema[]): boolean {
+  return sequences.some(sequence => sequence.fields.includes(name));
+}
+
+function buildAttributeValueSchema(
+  attribute: AttributeSchema,
+  enums: Record<string, string[]>
+): z.ZodType {
+  const values = allowedAttributeEnum(attribute, enums);
+  if (values && values.length > 0) return z.enum(values as [string, ...string[]]);
+  if (attribute.type === 'integer') return z.number().int();
+  if (attribute.type === 'boolean') return z.boolean();
+  return z.string();
+}
+
+function buildAttributesSchema(
+  attributes: Record<string, AttributeSchema>,
+  enums: Record<string, string[]>
+): z.ZodType {
+  const shape: Record<string, z.ZodType> = {};
+  for (const [name, attribute] of Object.entries(attributes)) {
+    shape[name] = buildAttributeValueSchema(attribute, enums).optional();
+  }
+  return z.strictObject(shape).superRefine((value, context) => {
+    for (const [name, attribute] of Object.entries(attributes)) {
+      if (attribute.required === true && !hasOwn(value, name)) {
+        context.addIssue({
+          code: 'custom',
+          path: [name],
+          message: 'Required attribute is missing',
+          params: { kind: 'attribute', expected: attribute.type },
+        });
+      }
+    }
+  });
+}
+
+function addRequiredAttributeIssues(
+  value: Record<string, unknown>,
+  context: z.RefinementCtx,
+  attributes: Record<string, AttributeSchema>
+): void {
+  if (hasOwn(value, '$attributes')) return;
+  for (const [name, attribute] of Object.entries(attributes)) {
+    if (attribute.required === true) {
+      context.addIssue({
+        code: 'custom',
+        path: ['$attributes', name],
+        message: 'Required attribute is missing',
+        params: { kind: 'attribute', expected: attribute.type },
+      });
+    }
+  }
+}
+
 function buildObjectSchema(
   fields: Record<string, FieldSchema>,
   choices: ChoiceSchema[],
+  sequences: SequenceSchema[],
+  attributes: Record<string, AttributeSchema>,
   enums: Record<string, string[]>
 ): z.ZodType {
   const shape: Record<string, z.ZodType> = {};
   for (const [name, field] of Object.entries(fields)) {
     shape[name] = buildFieldSchema(field, enums).optional();
   }
+  if (Object.keys(attributes).length > 0) {
+    shape.$attributes = buildAttributesSchema(attributes, enums).optional();
+  }
 
   return z.strictObject(shape).superRefine((value, context) => {
     for (const [name, field] of Object.entries(fields)) {
-      if (field.required === true && !Object.prototype.hasOwnProperty.call(value, name)) {
+      const occurrenceRequired = field.required === true || field.minOccurs >= 1;
+      if (
+        occurrenceRequired &&
+        !belongsToChoice(name, choices) &&
+        !belongsToSequence(name, sequences) &&
+        !hasOwn(value, name)
+      ) {
         context.addIssue({
           code: 'custom',
           path: [name],
@@ -66,7 +150,7 @@ function buildObjectSchema(
       let selected = 0;
       let partial = false;
       for (const option of choice.options) {
-        const present = option.filter(field => Object.prototype.hasOwnProperty.call(value, field));
+        const present = option.filter(field => hasOwn(value, field));
         if (present.length === option.length && present.length > 0) selected++;
         else if (present.length > 0) partial = true;
       }
@@ -80,7 +164,52 @@ function buildObjectSchema(
         });
       }
     }
+
+    for (const sequence of sequences) {
+      const present = sequence.fields.filter(field => hasOwn(value, field));
+      const requiredMembers = sequence.fields.filter(field => {
+        const schema = fields[field];
+        return schema !== undefined && schema.minOccurs >= 1 && !belongsToChoice(field, choices);
+      });
+      const selected = present.length > 0;
+      const missing = requiredMembers.filter(field => !hasOwn(value, field));
+      if ((sequence.minOccurs >= 1 && !selected) || (selected && missing.length > 0)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Payload does not satisfy the generated XSD sequence',
+          params: {
+            kind: 'sequence',
+            sequence: {
+              minOccurs: sequence.minOccurs,
+              maxOccurs: sequence.maxOccurs,
+              fields: sequence.fields,
+              missing,
+            },
+          },
+        });
+      }
+    }
+
+    addRequiredAttributeIssues(value, context, attributes);
   });
+}
+
+function withSimpleContentAttributes(
+  valueSchema: z.ZodType,
+  attributes: Record<string, AttributeSchema>,
+  enums: Record<string, string[]>
+): z.ZodType {
+  const attributeSchema = buildAttributesSchema(attributes, enums);
+  const wrapped = z
+    .strictObject({
+      $value: valueSchema,
+      $attributes: attributeSchema.optional(),
+    })
+    .superRefine((value, context) => addRequiredAttributeIssues(value, context, attributes));
+  const hasRequiredAttribute = Object.values(attributes).some(
+    attribute => attribute.required === true
+  );
+  return hasRequiredAttribute ? wrapped : z.union([valueSchema, wrapped]);
 }
 
 function buildFieldSchema(field: FieldSchema, enums: Record<string, string[]>): z.ZodType {
@@ -109,7 +238,13 @@ function buildFieldSchema(field: FieldSchema, enums: Record<string, string[]>): 
       }
       case 'object':
         schema = field.fields
-          ? buildObjectSchema(field.fields, field.choices ?? [], enums)
+          ? buildObjectSchema(
+              field.fields,
+              field.choices ?? [],
+              field.sequences ?? [],
+              field.attributes ?? {},
+              enums
+            )
           : z.record(z.string(), z.unknown());
         break;
       case 'opaque':
@@ -118,6 +253,15 @@ function buildFieldSchema(field: FieldSchema, enums: Record<string, string[]>): 
       default:
         schema = z.unknown();
     }
+  }
+
+  if (
+    field.type !== 'object' &&
+    field.type !== 'array' &&
+    field.attributes &&
+    Object.keys(field.attributes).length > 0
+  ) {
+    schema = withSimpleContentAttributes(schema, field.attributes, enums);
   }
 
   return field.nillable ? schema.nullable() : schema;
@@ -142,12 +286,36 @@ function fieldAtPath(schema: OperationSchema, path: PropertyKey[]): FieldSchema 
       if (field?.fields) fields = field.fields;
       continue;
     }
+    if (part === '$value' || part === '$attributes') continue;
     field = fields[String(part)];
     if (!field) return undefined;
     if (field.type === 'array' && field.items?.fields) fields = field.items.fields;
     else if (field.fields) fields = field.fields;
   }
   return field;
+}
+
+function attributeAtPath(
+  operation: OperationSchema,
+  path: PropertyKey[]
+): AttributeSchema | undefined {
+  let attributes = operation.attributes;
+  let fields = operation.fields;
+  let field: FieldSchema | undefined;
+  for (let index = 0; index < path.length; index++) {
+    const part = path[index];
+    if (part === '$attributes') {
+      const name = path[index + 1];
+      return typeof name === 'string' ? attributes[name] : undefined;
+    }
+    if (part === '$value' || typeof part === 'number') continue;
+    field = fields[String(part)];
+    if (!field) return undefined;
+    attributes = field.attributes ?? {};
+    if (field.type === 'array' && field.items?.fields) fields = field.items.fields;
+    else if (field.fields) fields = field.fields;
+  }
+  return undefined;
 }
 
 function issueDetail(
@@ -170,6 +338,22 @@ function issueDetail(
       choice: params.choice as CliValidationDetail['choice'],
     };
   }
+  if (params?.kind === 'sequence') {
+    return {
+      path: pathString(issue.path),
+      kind: 'sequence',
+      message: issue.message,
+      sequence: params.sequence as CliValidationDetail['sequence'],
+    };
+  }
+  if (params?.kind === 'attribute') {
+    return {
+      path: pathString(issue.path),
+      kind: 'attribute',
+      message: issue.message,
+      expected: String(params.expected),
+    };
+  }
   if (params?.kind === 'required') {
     return {
       path: pathString(issue.path),
@@ -184,6 +368,15 @@ function issueDetail(
       kind: 'unknown',
       message: issue.message,
       keys: issue.keys,
+    };
+  }
+  const attribute = attributeAtPath(operation, issue.path);
+  if (attribute) {
+    return {
+      path: pathString(issue.path),
+      kind: 'attribute',
+      message: issue.message,
+      expected: attribute.type,
     };
   }
   if (values && values.length > 0) {
@@ -215,7 +408,13 @@ export function validateOperationInput(
   enums: Record<string, string[]>,
   input: unknown
 ): unknown {
-  const schema = buildObjectSchema(operation.fields, operation.choices, enums);
+  const schema = buildObjectSchema(
+    operation.fields,
+    operation.choices,
+    operation.sequences,
+    operation.attributes,
+    enums
+  );
   const result = schema.safeParse(input);
   if (!result.success) {
     throw new CliSchemaValidationError(

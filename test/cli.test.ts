@@ -119,6 +119,22 @@ describe('schema-driven CLI discovery', () => {
     expect(cli.stdout().trim().split('\n')).toHaveLength(1);
   });
 
+  it('redacts a secret-valued unsupported operation from messages, details, and metadata', async () => {
+    const secret = 'UNSUPPORTED-OP-SECRET-884';
+    const cli = harness({ env: { ...completeEnv, CUCM_PASSWORD: secret } });
+
+    expect(await runCli(['describe', secret, '--version', '15.0'], cli.dependencies)).toBe(3);
+    expect(cli.stdout()).not.toContain(secret);
+    expect(cli.stderr()).not.toContain(secret);
+    expect(cli.envelope()).toMatchObject({
+      error: {
+        code: 'CLI_UNSUPPORTED_OPERATION',
+        details: { operation: '***', cucm_version: '15.0' },
+      },
+      meta: { command: 'describe', operation: '***', cucm_version: '15.0' },
+    });
+  });
+
   it.each([
     {
       label: 'operation',
@@ -156,6 +172,135 @@ describe('schema-driven CLI discovery', () => {
 });
 
 describe('operation payload validation', () => {
+  it('enforces occurrence-required fields at top-level and inside optional objects', () => {
+    const schema: OperationSchema = {
+      verb: 'add',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        requiredTop: { type: 'string', minOccurs: 1, maxOccurs: 1, nillable: false },
+        optionalObject: {
+          type: 'object',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: false,
+          fields: {
+            requiredNested: { type: 'integer', minOccurs: 1, maxOccurs: 1, nillable: false },
+          },
+        },
+      },
+      choices: [],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(() => validateOperationInput(schema, {}, {})).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({ path: 'requiredTop', kind: 'required' }),
+        ]),
+      })
+    );
+    expect(validateOperationInput(schema, {}, { requiredTop: 'ok' })).toEqual({
+      requiredTop: 'ok',
+    });
+    expect(() =>
+      validateOperationInput(schema, {}, { requiredTop: 'ok', optionalObject: {} })
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({ path: 'optionalObject.requiredNested', kind: 'required' }),
+        ]),
+      })
+    );
+  });
+
+  it('enforces optional and required generated sequence groups without requiring absent optional groups', () => {
+    const schema: OperationSchema = {
+      verb: 'add',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        optionalA: { type: 'string', minOccurs: 1, maxOccurs: 1, nillable: false, sequence: 0 },
+        optionalB: { type: 'integer', minOccurs: 1, maxOccurs: 1, nillable: false, sequence: 0 },
+        requiredMember: {
+          type: 'string',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          sequence: 1,
+        },
+      },
+      choices: [],
+      sequences: [
+        { minOccurs: 0, maxOccurs: 1, fields: ['optionalA', 'optionalB'] },
+        { minOccurs: 1, maxOccurs: 1, fields: ['requiredMember'] },
+      ],
+      attributes: {},
+    };
+
+    expect(validateOperationInput(schema, {}, { requiredMember: 'selected' })).toEqual({
+      requiredMember: 'selected',
+    });
+    expect(() =>
+      validateOperationInput(schema, {}, { optionalA: 'partial', requiredMember: 'selected' })
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([expect.objectContaining({ kind: 'sequence' })]),
+      })
+    );
+    expect(() => validateOperationInput(schema, {}, {})).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([expect.objectContaining({ kind: 'sequence' })]),
+      })
+    );
+  });
+
+  it('rejects a generated CUCM 15 addPhone payload missing occurrence-required fields', async () => {
+    const artifacts = await loadAxlVersionArtifacts('15.0');
+
+    expect(() =>
+      validateOperationInput(artifacts.operationSchemas.addPhone!, artifacts.enums, {
+        phone: { name: 'SEP001' },
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({
+            path: 'phone',
+            kind: 'sequence',
+            sequence: expect.objectContaining({
+              missing: expect.arrayContaining(['product', 'protocol']),
+            }),
+          }),
+        ]),
+      })
+    );
+  });
+
+  it('validates generated simple-content attributes with strong-soap value/attribute keys', async () => {
+    const artifacts = await loadAxlVersionArtifacts('15.0');
+    const schema = artifacts.operationSchemas.listChange!;
+    const valid = { startChangeId: { $value: 42, $attributes: { queueId: 'queue-1' } } };
+
+    expect(validateOperationInput(schema, artifacts.enums, valid)).toEqual(valid);
+    expect(() =>
+      validateOperationInput(schema, artifacts.enums, {
+        startChangeId: { $value: 42, $attributes: {} },
+      })
+    ).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({
+            path: 'startChangeId.$attributes.queueId',
+            kind: 'attribute',
+          }),
+        ]),
+      })
+    );
+    expect(() => validateOperationInput(schema, artifacts.enums, { startChangeId: 42 })).toThrow();
+  });
+
   it('rejects null for non-nillable opaque fields while accepting opaque JSON values', () => {
     const schema: OperationSchema = {
       verb: 'update',
@@ -224,9 +369,19 @@ describe('operation payload validation', () => {
     const version11 = await loadAxlVersionArtifacts('11.0');
     expect(
       validateOperationInput(version11.operationSchemas.addAppServerInfo!, version11.enums, {
-        appServerInfo: { content: null },
+        appServerInfo: {
+          appServerName: 'Unity',
+          appServerContent: 'UNITY KUBRIK',
+          content: null,
+        },
       })
-    ).toEqual({ appServerInfo: { content: null } });
+    ).toEqual({
+      appServerInfo: {
+        appServerName: 'Unity',
+        appServerContent: 'UNITY KUBRIK',
+        content: null,
+      },
+    });
   }, 15_000);
 
   it('reports each missing required enum or array exactly once as required', () => {
@@ -598,6 +753,18 @@ describe('CLI execution', () => {
       ],
       'CLI_MUTATION_CONFIRMATION_INVALID',
     ],
+    [
+      [
+        'execute',
+        'updatePhone',
+        '--data',
+        '{"name":"SEP001","description":"updated"}',
+        '--write',
+        '--confirm',
+        ' updatePhone ',
+      ],
+      'CLI_MUTATION_CONFIRMATION_INVALID',
+    ],
   ])('rejects mutation without all human and grant safeguards', async (argv, code) => {
     const runner = vi.fn(async () => ({ unreachable: true }));
     const cli = harness({ runAxl: runner });
@@ -678,6 +845,15 @@ describe('CLI execution', () => {
     const denied = harness({ readFile: async () => Buffer.from('update device set name=name') });
     expect(await runCli(['sql', 'update', '--file', 'update.sql'], denied.dependencies)).toBe(5);
     expect(denied.calls).toHaveLength(0);
+
+    const padded = harness({ readFile: async () => Buffer.from('update device set name=name') });
+    expect(
+      await runCli(
+        ['sql', 'update', '--file', 'update.sql', '--write', '--confirm', ' sql-update '],
+        padded.dependencies
+      )
+    ).toBe(5);
+    expect(padded.calls).toHaveLength(0);
 
     const allowed = harness({ readFile: async () => Buffer.from('update device set name=name') });
     expect(

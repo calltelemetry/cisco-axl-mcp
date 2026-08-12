@@ -123,18 +123,15 @@ export function toCliFailure(
   sensitiveValues: readonly string[] = [],
   meta?: Record<string, unknown>
 ): { exitCode: CliFailureExitCode; envelope: CliFailureEnvelope; diagnostic: string } {
-  const redacted = redactCredentials(error, sensitiveValues);
   let body: CliErrorBody;
   let exitCode: CliFailureExitCode;
 
   if (error instanceof CliError) {
     exitCode = error.exitCode;
-    const redactedDetails =
-      error.details === undefined ? undefined : redactCredentials(error.details, sensitiveValues);
     body = {
       code: error.code,
-      message: errorMessage(redactCredentials(error.message, sensitiveValues)),
-      ...(redactedDetails !== undefined && { details: redactedDetails }),
+      message: error.message,
+      ...(error.details !== undefined && { details: error.details }),
     };
   } else {
     const code =
@@ -144,13 +141,18 @@ export function toCliFailure(
         ? ((error as Record<string, unknown>).code as string)
         : 'CLI_AXL_FAILURE';
     exitCode = policyExitCode(code) ?? 4;
-    body = { code, message: errorMessage(redacted) };
+    body = { code, message: errorMessage(redactCredentials(error, sensitiveValues)) };
   }
 
-  const envelope = failureEnvelope(body, meta);
+  const safeBody = redactCredentials(body, sensitiveValues) as CliErrorBody;
+  const safeMeta =
+    meta === undefined
+      ? undefined
+      : (redactCredentials(meta, sensitiveValues) as Record<string, unknown>);
+  const envelope = failureEnvelope(safeBody, safeMeta);
   return {
     exitCode,
     envelope,
-    diagnostic: escapeCliControlCharacters(`${body.code}: ${body.message}`),
+    diagnostic: escapeCliControlCharacters(`${safeBody.code}: ${safeBody.message}`),
   };
 }

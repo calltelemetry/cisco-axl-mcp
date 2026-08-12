@@ -5,17 +5,20 @@ import { tmpdir } from 'node:os';
 import { setAuditDir, writeAuditEntry } from '../src/lib/audit-log';
 
 // Mock getAxlClient to avoid real CUCM connections
-vi.mock('../src/lib/axl-client', () => {
+vi.mock('../src/lib/axl-client', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/lib/axl-client')>();
   const mockClient = {
     executeOperation: vi.fn().mockResolvedValue({ return: { phone: [{ name: 'SEP111' }] } }),
   };
   return {
+    ...actual,
     getAxlClient: vi.fn(() => mockClient),
     __mockClient: mockClient,
   };
 });
 
 import { AxlAPIService } from '../src/services/axl/index';
+import { runCli } from '../src/cli';
 const { __mockClient: mockClient, getAxlClient: mockGetAxlClient } =
   (await import('../src/lib/axl-client')) as any;
 
@@ -123,6 +126,66 @@ describe('AxlAPIService.executeOperation', () => {
     process.env.AXL_MCP_MAX_RETRIES = origRetries;
     process.env.AXL_MCP_RETRY_BASE_DELAY_MS = origDelay;
   });
+
+  it('keeps retryable CLI service failures out of raw console output', async () => {
+    const secret = 'RETRY-SERVICE-SECRET-731';
+    const controls = '\r\n\u001b\u0085\u009b\u2028\u2029';
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    const originalAuditLevel = process.env.AXL_MCP_AUDIT_LOG;
+    process.env.AXL_MCP_MAX_RETRIES = '1';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    process.env.AXL_MCP_AUDIT_LOG = 'metadata';
+    mockClient.executeOperation.mockRejectedValue(
+      new Error(`503 retry for ${secret}${controls} ordinary tail`)
+    );
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let stdout = '';
+    let stderr = '';
+
+    try {
+      expect(
+        await runCli(['execute', 'getPhone', '--data', '{"name":"SEP001"}'], {
+          env: {
+            CUCM_HOST: creds.host,
+            CUCM_USERNAME: creds.username,
+            CUCM_PASSWORD: secret,
+            CUCM_VERSION: '15.0',
+          },
+          stdout: { write: value => ((stdout += String(value)), true) },
+          stderr: { write: value => ((stderr += String(value)), true) },
+          readStdin: async () => '',
+          runnerDependencies: { service: new AxlAPIService() },
+        })
+      ).toBe(4);
+
+      const consoleOutput = consoleSpy.mock.calls.flat().join(' ');
+      for (const output of [stdout, stderr, consoleOutput]) {
+        expect(output).not.toContain(secret);
+        for (const control of ['\r', '\u001b', '\u0085', '\u009b', '\u2028', '\u2029']) {
+          expect(output).not.toContain(control);
+        }
+      }
+      expect(stderr.trimEnd().split('\n')).toHaveLength(1);
+      expect(JSON.parse(stdout)).toMatchObject({
+        error: { code: 'CLI_AXL_FAILURE', message: expect.stringContaining('503') },
+      });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+
+      const { readFileSync } = await import('node:fs');
+      const content = readFileSync(join(tempDir, `${creds.host}.jsonl`), 'utf-8');
+      expect(content).not.toContain(secret);
+      expect(content).toContain('"status":"retry"');
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      if (originalAuditLevel === undefined) delete process.env.AXL_MCP_AUDIT_LOG;
+      else process.env.AXL_MCP_AUDIT_LOG = originalAuditLevel;
+      consoleSpy.mockRestore();
+    }
+  }, 15_000);
 
   it('applies adaptive delay when recent throttle events exist', async () => {
     // Seed audit log with a recent throttle event

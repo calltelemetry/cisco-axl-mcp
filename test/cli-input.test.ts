@@ -81,6 +81,15 @@ describe('parseCliCommand', () => {
     });
   });
 
+  it('preserves confirmation whitespace while rejecting whitespace-only confirmations', () => {
+    expect(
+      parseCliCommand(['execute', 'updatePhone', '--write', '--confirm', ' updatePhone '])
+    ).toMatchObject({ confirm: ' updatePhone ' });
+    expect(() =>
+      parseCliCommand(['execute', 'updatePhone', '--write', '--confirm', '   '])
+    ).toThrow();
+  });
+
   it.each([
     ['execute', 'getPhone', '--password', 'do-not-accept'],
     ['execute', 'getPhone', '--data', '{}', '--data', '{}'],

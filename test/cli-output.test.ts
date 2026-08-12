@@ -74,4 +74,19 @@ describe('CLI output envelopes', () => {
     expect(failure.diagnostic).not.toContain('axl-admin');
     expect(failure.diagnostic).not.toContain('super-secret');
   });
+
+  it('redacts externally supplied error codes and failure metadata', () => {
+    const secret = 'CODE-META-SECRET-731';
+    const failure = toCliFailure({ code: `AXL_${secret}`, message: 'transport failed' }, [secret], {
+      operation: secret,
+      nested: { value: secret },
+    });
+
+    expect(JSON.stringify(failure.envelope)).not.toContain(secret);
+    expect(failure.diagnostic).not.toContain(secret);
+    expect(failure.envelope).toMatchObject({
+      error: { code: 'AXL_***', message: 'transport failed' },
+      meta: { operation: '***', nested: { value: '***' } },
+    });
+  });
 });

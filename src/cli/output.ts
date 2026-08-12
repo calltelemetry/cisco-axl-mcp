@@ -33,13 +33,26 @@ export const CLI_FAILURE_ENVELOPE_SCHEMA = z
 export type CliSuccessEnvelope = z.infer<typeof CLI_SUCCESS_ENVELOPE_SCHEMA>;
 export type CliFailureEnvelope = z.infer<typeof CLI_FAILURE_ENVELOPE_SCHEMA>;
 
-const UNSAFE_JSON_CODE_POINTS = /[\u007f-\u009f\u2028\u2029]/gu;
+export function escapeCliControlCharacters(value: string): string {
+  let escaped = '';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    ) {
+      escaped += `\\u${codePoint.toString(16).padStart(4, '0')}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
+}
 
 export function serializeCliEnvelope(envelope: CliSuccessEnvelope | CliFailureEnvelope): string {
-  return JSON.stringify(envelope).replace(UNSAFE_JSON_CODE_POINTS, character => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return `\\u${codePoint.toString(16).padStart(4, '0')}`;
-  });
+  return escapeCliControlCharacters(JSON.stringify(envelope));
 }
 
 export interface CliErrorBody {
@@ -138,6 +151,6 @@ export function toCliFailure(
   return {
     exitCode,
     envelope,
-    diagnostic: `${body.code}: ${body.message}`,
+    diagnostic: escapeCliControlCharacters(`${body.code}: ${body.message}`),
   };
 }

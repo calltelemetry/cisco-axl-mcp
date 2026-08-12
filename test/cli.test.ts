@@ -14,6 +14,13 @@ const completeEnv = {
 };
 
 const unsafeJsonControls = ['\u0085', '\u009b', '\u2028', '\u2029'];
+const unsafeDiagnosticControls = [
+  ...Array.from({ length: 0x20 }, (_, codePoint) => String.fromCharCode(codePoint)),
+  String.fromCharCode(0x7f),
+  ...Array.from({ length: 0x20 }, (_, offset) => String.fromCharCode(0x80 + offset)),
+  '\u2028',
+  '\u2029',
+];
 
 function expectNoRawUnsafeJsonControls(...outputs: string[]): void {
   for (const output of outputs) {
@@ -525,6 +532,39 @@ describe('CLI execution', () => {
     expect(cli.stdout()).not.toContain('super-secret');
     expect(cli.stderr()).not.toContain('axl-admin');
     expect(cli.stderr()).not.toContain('super-secret');
+  });
+
+  it('escapes untrusted transport diagnostics to one line while preserving envelope values', async () => {
+    const message = `transport failed for super-secret: ${unsafeDiagnosticControls.join('')} ordinary tail`;
+    const cli = harness({
+      runAxl: async () => {
+        throw new Error(message);
+      },
+    });
+
+    expect(
+      await runCli(['execute', 'getPhone', '--data', '{"name":"SEP001"}'], cli.dependencies)
+    ).toBe(4);
+
+    const stdoutBody = cli.stdout().slice(0, -1);
+    const diagnostic = cli.stderr().slice(0, -1);
+    expect(cli.stdout().endsWith('\n')).toBe(true);
+    expect(cli.stdout().split('\n')).toHaveLength(2);
+    expect(cli.stderr().endsWith('\n')).toBe(true);
+    expect(cli.stderr().split('\n')).toHaveLength(2);
+    for (const control of unsafeDiagnosticControls) {
+      expect(diagnostic).not.toContain(control);
+      expect(stdoutBody).not.toContain(control);
+    }
+    expect(diagnostic).toContain('CLI_AXL_FAILURE: transport failed for ***:');
+    expect(diagnostic).toContain('ordinary tail');
+    expect(diagnostic).not.toContain('super-secret');
+    expect(cli.envelope()).toMatchObject({
+      error: {
+        code: 'CLI_AXL_FAILURE',
+        message: message.replace('super-secret', '***'),
+      },
+    });
   });
 
   it('visibly reports opt-in insecure TLS without polluting stdout', async () => {

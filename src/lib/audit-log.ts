@@ -94,7 +94,7 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   );
   redacted = redactQuotedCredentialValues(redacted);
   redacted = redacted.replace(
-    /(\b(?:authorization|authentication|auth)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n,;<]+)/gi,
+    /(\b(?:authorization|authentication|auth)\s*[:=]\s*)[^\r\n]*/gi,
     '$1***'
   );
   redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');

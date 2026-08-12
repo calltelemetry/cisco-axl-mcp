@@ -488,6 +488,48 @@ describe('redactCredentials', () => {
     expect(redacted).toContain('Fault-Code: 500');
   });
 
+  it.each([
+    [
+      'comma-bearing Digest',
+      'SOAP fault\nAuthorization: Digest username="axl-admin", realm="CUCM", nonce="nonce-secret", response="response-secret"\nFault-Code: 500',
+      ['axl-admin', 'CUCM', 'nonce-secret', 'response-secret'],
+      'Fault-Code: 500',
+    ],
+    [
+      'semicolon-bearing custom scheme',
+      'SOAP fault\r\nAuthorization=Custom first-token; second=second-secret; third=third-secret\r\nTrace-Id: safe-trace',
+      ['first-token', 'second-secret', 'third-secret'],
+      'Trace-Id: safe-trace',
+    ],
+  ] as const)(
+    'redacts complete %s authorization values in serialized faults',
+    (_label, message, secrets, preservedText) => {
+      const fault = new Error(message);
+      Object.assign(fault, { detail: { faultText: message } });
+
+      const serialized = JSON.stringify(redactCredentials(fault));
+      for (const secret of secrets) expect(serialized).not.toContain(secret);
+      expect(serialized).toContain('Authorization');
+      expect(serialized).toContain('***');
+      expect(serialized).toContain(preservedText);
+    }
+  );
+
+  it('redacts complete delimiter-bearing authorization values from persisted audit errors', () => {
+    recordOperation('host', 'getPhone', Date.now(), {
+      ok: false,
+      error:
+        'SOAP fault\nAuthorization: Digest nonce="audit-nonce", response="audit-response"; next=second-token\nFault-Code: 401',
+    });
+
+    const persisted = JSON.stringify(readLogLines('host')[0]);
+    for (const secret of ['audit-nonce', 'audit-response', 'second-token']) {
+      expect(persisted).not.toContain(secret);
+    }
+    expect(persisted).toContain('Authorization: ***');
+    expect(persisted).toContain('Fault-Code: 401');
+  });
+
   it('redacts case variants, credential-like values, URLs, XML faults, errors, and arrays recursively', () => {
     const fault = new Error(
       'POST https://admin:secret123@cucm.example.test/axl?token=response-token failed: <Password>secret123</Password>'

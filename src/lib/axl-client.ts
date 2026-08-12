@@ -2,8 +2,15 @@ import CiscoAxlService from 'cisco-axl';
 import { createHmac, randomBytes } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import type { CucmCredentials } from '../types/credentials';
+import { AxlPolicyError } from '../types/axl/errors';
 
 export type TlsMode = 'secure' | 'insecure';
+
+export function assertTlsMode(value: unknown): asserts value is TlsMode {
+  if (value !== 'secure' && value !== 'insecure') {
+    throw new AxlPolicyError('AXL_TLS_MODE_INVALID', `Invalid TLS mode "${String(value)}"`);
+  }
+}
 
 export interface ExecuteOperationOptions {
   clean?: boolean;
@@ -40,6 +47,7 @@ const tlsConfiguredClients = new WeakSet<object>();
 
 /** A process-local opaque identity; the password itself never enters the Map key. */
 export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: TlsMode): string {
+  assertTlsMode(tlsMode);
   const passwordIdentity = createHmac('sha256', cacheIdentityKey)
     .update(creds.password)
     .digest('hex');
@@ -47,6 +55,7 @@ export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: Tl
 }
 
 function applyExplicitTls(service: CiscoAxlInternals, tlsMode: TlsMode): void {
+  assertTlsMode(tlsMode);
   if (typeof service._getClient !== 'function') return;
   const getClient = service._getClient.bind(service);
   const rejectUnauthorized = tlsMode === 'secure';
@@ -106,6 +115,7 @@ function testAuthentication(creds: CucmCredentials, tlsMode: TlsMode): Promise<b
 }
 
 export function getAxlClientDiagnostics(creds: CucmCredentials, tlsMode: TlsMode) {
+  assertTlsMode(tlsMode);
   return {
     host: creds.host,
     version: creds.version,
@@ -115,6 +125,7 @@ export function getAxlClientDiagnostics(creds: CucmCredentials, tlsMode: TlsMode
 }
 
 export function getAxlClient(creds: CucmCredentials, tlsMode: TlsMode = 'secure'): AxlClient {
+  assertTlsMode(tlsMode);
   const key = createAxlClientCacheIdentity(creds, tlsMode);
   const cached = clientCache.get(key);
   if (cached) return cached;

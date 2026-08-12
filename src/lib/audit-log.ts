@@ -51,6 +51,27 @@ function isCredentialKey(key: string): boolean {
   );
 }
 
+function decodeJsonKey(key: string): string {
+  try {
+    return JSON.parse(`"${key}"`) as string;
+  } catch {
+    return key;
+  }
+}
+
+function redactQuotedCredentialValues(value: string): string {
+  const escaped = value.replace(
+    /(\\"((?:\\\\.|[^"\\])*)\\"\s*:\s*)\\"(?:\\\\.|[^"\\])*\\"/g,
+    (match, prefix: string, key: string) =>
+      isCredentialKey(decodeJsonKey(key)) ? `${prefix}\\"***\\"` : match
+  );
+  return escaped.replace(
+    /("((?:\\.|[^"\\])*)"\s*:\s*)"(?:\\.|[^"\\])*"/g,
+    (match, prefix: string, key: string) =>
+      isCredentialKey(decodeJsonKey(key)) ? `${prefix}"***"` : match
+  );
+}
+
 function redactString(value: string, sensitiveValues: readonly string[]): string {
   let redacted = value;
   for (const secret of sensitiveValues) {
@@ -59,9 +80,10 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
 
   redacted = redacted.replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi, '$1***:***@');
   redacted = redacted.replace(
-    /(<(?:[a-z0-9_-]*:)?[a-z0-9_-]*(?:password|passwd|pwd|secret|token|authorization|api[_-]?key|username)[a-z0-9_-]*\b[^>]*>)[^<]*(<\/[^>]+>)/gi,
-    '$1***$2'
+    /(<((?:[a-z0-9_-]*:)?[a-z0-9_-]*(?:password|passwd|pwd|secret|token|authorization|api[_-]?key|username)[a-z0-9_-]*)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi,
+    '$1***$3'
   );
+  redacted = redactQuotedCredentialValues(redacted);
   redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
   redacted = redacted.replace(
     /(\b(?:password|passwd|pwd|secret|token|authorization|api[_-]?key|username)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,

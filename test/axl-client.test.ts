@@ -172,4 +172,19 @@ describe('getAxlClient', () => {
     expect(JSON.stringify(diagnostics)).not.toContain(creds.password);
     expect(JSON.stringify(diagnostics)).not.toContain(creds.username);
   });
+
+  it('rejects an unknown runtime TLS mode before constructing a client', async () => {
+    const { getAxlClient } = await import('../src/lib/axl-client');
+    const creds: CucmCredentials = {
+      host: 'cucm-invalid-tls.local',
+      username: 'admin',
+      password: 'secret',
+      version: '14.0',
+    };
+
+    expect(() => getAxlClient(creds, 'unknown-tls' as 'secure')).toThrowError(
+      expect.objectContaining({ code: 'AXL_TLS_MODE_INVALID' })
+    );
+    expect(clientObservations.constructorCalls).toHaveLength(0);
+  });
 });

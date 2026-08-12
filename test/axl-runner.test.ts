@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createMutationGrant, MutationGrantReplayStore } from '../src/lib/mutation-grants';
+import {
+  consumeMutationGrant,
+  createMutationGrant,
+  MutationGrantAuthority,
+  MutationGrantReplayStore,
+} from '../src/lib/mutation-grants';
 import { runAxl, type AxlRunRequest } from '../src/lib/axl-runner';
 import type { AxlAPIService } from '../src/services/axl/index';
 
@@ -65,6 +70,45 @@ describe('runAxl policy separation', () => {
         { service: fake.api, packageVersion: PACKAGE_VERSION }
       )
     ).rejects.toMatchObject({ code: 'AXL_POLICY_VALIDATION_MODE' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['source', { source: 'unknown-source', validationMode: 'strict' }, 'AXL_POLICY_SOURCE_INVALID'],
+    [
+      'validation mode',
+      { source: 'mcp', validationMode: 'unknown-validation' },
+      'AXL_POLICY_VALIDATION_MODE',
+    ],
+  ] as const)('runtime-rejects an unknown %s', async (_label, runtimeValues, code) => {
+    const fake = service();
+
+    await expect(
+      runAxl(
+        {
+          request: request(),
+          source: runtimeValues.source as 'mcp',
+          validationMode: runtimeValues.validationMode as 'strict',
+        },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).rejects.toMatchObject({ code });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it('runtime-rejects an unknown TLS mode before transport dispatch', async () => {
+    const fake = service();
+
+    await expect(
+      runAxl(
+        {
+          request: request({ tlsMode: 'unknown-tls' as 'secure' }),
+          source: 'mcp',
+          validationMode: 'compatible',
+        },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_TLS_MODE_INVALID' });
     expect(fake.executeOperation).not.toHaveBeenCalled();
   });
 
@@ -181,6 +225,78 @@ describe('mutation grant enforcement', () => {
     );
   }
 
+  it('issues an authenticated provenance value', async () => {
+    await expect(grant()).resolves.toMatchObject({
+      provenance: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it('applies an authenticated grant with an injected authority and replay store', async () => {
+    const fake = service({ updated: true });
+    const authority = new MutationGrantAuthority(Buffer.alloc(32, 7));
+    const mutationGrant = await createMutationGrant(
+      {
+        request: writeRequest,
+        packageVersion: PACKAGE_VERSION,
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+      { now: () => NOW, authority }
+    );
+
+    await expect(
+      runAxl(
+        {
+          request: writeRequest,
+          source: 'workflow',
+          validationMode: 'strict',
+          mutationGrant,
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          grantAuthority: authority,
+          replayStore: new MutationGrantReplayStore(),
+        }
+      )
+    ).resolves.toEqual({ updated: true });
+  });
+
+  it.each([
+    [
+      'id',
+      (mutationGrant: Awaited<ReturnType<typeof grant>>) => ({ ...mutationGrant, id: 'forged-id' }),
+    ],
+    [
+      'request digest',
+      (mutationGrant: Awaited<ReturnType<typeof grant>>) => ({
+        ...mutationGrant,
+        requestDigest: '0'.repeat(64),
+      }),
+    ],
+  ] as const)('rejects a grant with a caller-forged %s', async (_field, forge) => {
+    const fake = service();
+    const mutationGrant = forge(await grant());
+
+    await expect(
+      runAxl(
+        {
+          request: writeRequest,
+          source: 'workflow',
+          validationMode: 'strict',
+          mutationGrant,
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          replayStore: new MutationGrantReplayStore(),
+        }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_PROVENANCE_INVALID' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
   it('rejects a grant applied to a different target', async () => {
     const fake = service();
 
@@ -250,6 +366,203 @@ describe('mutation grant enforcement', () => {
     ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_DRIFT' });
   });
 
+  it('rejects execute options drift between preview and apply', async () => {
+    const fake = service();
+    const previewRequest = { ...writeRequest, opts: { clean: true, removeAttributes: false } };
+    const mutationGrant = await createMutationGrant(
+      {
+        request: previewRequest,
+        packageVersion: PACKAGE_VERSION,
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+      { now: () => NOW }
+    );
+
+    await expect(
+      runAxl(
+        {
+          request: { ...previewRequest, opts: { clean: false, removeAttributes: false } },
+          source: 'workflow',
+          validationMode: 'strict',
+          mutationGrant,
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          replayStore: new MutationGrantReplayStore(),
+        }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_DRIFT' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it('rejects TLS drift between preview and apply', async () => {
+    const fake = service();
+    const mutationGrant = await grant();
+
+    await expect(
+      runAxl(
+        {
+          request: { ...writeRequest, tlsMode: 'insecure' },
+          source: 'workflow',
+          validationMode: 'strict',
+          mutationGrant,
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          replayStore: new MutationGrantReplayStore(),
+        }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_DRIFT' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'custom toJSON',
+      { name: 'SEP001122334455', toJSON: () => ({ name: 'forged-transport-value' }) },
+    ],
+    ['non-finite number', { name: 'SEP001122334455', value: Number.NaN }],
+    ['undefined', { name: 'SEP001122334455', value: undefined }],
+    ['bigint', { name: 'SEP001122334455', value: BigInt(1) }],
+    ['date object', { name: 'SEP001122334455', value: new Date('2026-08-12T00:00:00Z') }],
+  ] as const)('rejects mutation data containing %s', async (_label, data) => {
+    await expect(
+      createMutationGrant(
+        {
+          request: { ...writeRequest, data },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
+  });
+
+  it('rejects cyclic mutation data', async () => {
+    const data: Record<string, unknown> = { name: 'SEP001122334455' };
+    data.self = data;
+
+    await expect(
+      createMutationGrant(
+        {
+          request: { ...writeRequest, data },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
+  });
+
+  it('rejects array accessors without invoking them', async () => {
+    let invoked = false;
+    const values: unknown[] = [];
+    Object.defineProperty(values, '0', {
+      enumerable: true,
+      get() {
+        invoked = true;
+        return 'side effect';
+      },
+    });
+    values.length = 1;
+
+    await expect(
+      createMutationGrant(
+        {
+          request: { ...writeRequest, data: { name: 'SEP001122334455', values } },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
+    expect(invoked).toBe(false);
+  });
+
+  it('rejects arrays with a non-enumerable custom toJSON method', async () => {
+    const values = ['original'];
+    Object.defineProperty(values, 'toJSON', {
+      value: () => ['forged-transport-value'],
+    });
+
+    await expect(
+      createMutationGrant(
+        {
+          request: { ...writeRequest, data: { name: 'SEP001122334455', values } },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
+  });
+
+  it('rejects non-JSON execute options', async () => {
+    const opts = {
+      clean: true,
+      toJSON: () => ({ clean: false }),
+    } as unknown as NonNullable<AxlRunRequest['opts']>;
+
+    await expect(
+      createMutationGrant(
+        {
+          request: { ...writeRequest, opts },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
+  });
+
+  it('dispatches the same immutable normalized snapshot used for grant binding', async () => {
+    const fake = service({ updated: true });
+    const data = {
+      z: 1,
+      nested: { z: 2, a: 1 },
+      a: 'first',
+    };
+    const opts = { removeAttributes: false, clean: true };
+    const previewRequest = { ...writeRequest, data, opts };
+    const mutationGrant = await createMutationGrant(
+      {
+        request: previewRequest,
+        packageVersion: PACKAGE_VERSION,
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+      { now: () => NOW }
+    );
+
+    await runAxl(
+      {
+        request: previewRequest,
+        source: 'workflow',
+        validationMode: 'strict',
+        mutationGrant,
+      },
+      {
+        service: fake.api,
+        packageVersion: PACKAGE_VERSION,
+        now: () => NOW,
+        replayStore: new MutationGrantReplayStore(),
+      }
+    );
+
+    const dispatchedData = fake.executeOperation.mock.calls[0]![2];
+    const dispatchedOptions = fake.executeOperation.mock.calls[0]![3];
+    expect(JSON.stringify(dispatchedData)).toBe('{"a":"first","nested":{"a":1,"z":2},"z":1}');
+    expect(JSON.stringify(dispatchedOptions)).toBe('{"clean":true,"removeAttributes":false}');
+    expect(dispatchedData).not.toBe(data);
+    expect(dispatchedOptions).not.toBe(opts);
+    expect(Object.isFrozen(dispatchedData)).toBe(true);
+    expect(Object.isFrozen((dispatchedData as { nested: object }).nested)).toBe(true);
+    expect(Object.isFrozen(dispatchedOptions)).toBe(true);
+  });
+
   it('rejects package drift between preview and apply', async () => {
     const fake = service();
 
@@ -272,25 +585,20 @@ describe('mutation grant enforcement', () => {
   });
 
   it('rejects schema drift between preview and apply', async () => {
-    const fake = service();
-    const mutationGrant = { ...(await grant()), schemaDigest: 'different-schema' };
-
-    await expect(
-      runAxl(
-        {
-          request: writeRequest,
-          source: 'workflow',
-          validationMode: 'strict',
-          mutationGrant,
-        },
-        {
-          service: fake.api,
-          packageVersion: PACKAGE_VERSION,
-          now: () => NOW,
-          replayStore: new MutationGrantReplayStore(),
-        }
-      )
-    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_SCHEMA_DRIFT' });
+    let thrown: unknown;
+    try {
+      consumeMutationGrant({
+        grant: await grant(),
+        request: writeRequest,
+        packageVersion: PACKAGE_VERSION,
+        schemaDigest: 'different-runtime-schema',
+        now: () => NOW,
+        replayStore: new MutationGrantReplayStore(),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: 'AXL_MUTATION_GRANT_SCHEMA_DRIFT' });
   });
 
   it('consumes a grant before execution and rejects replay', async () => {

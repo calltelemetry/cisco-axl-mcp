@@ -412,6 +412,41 @@ describe('redactCredentials', () => {
     expect(redacted).toContain('***');
   });
 
+  it('redacts quoted JSON credential fields embedded in SOAP fault text', () => {
+    const redacted = redactCredentials(
+      'SOAP fault {"Password":"plain-text-secret","nested":{"Authorization":"Bearer auth-token","api_token":"nested-token"}}'
+    );
+    const serialized = String(redacted);
+    expect(serialized).not.toContain('plain-text-secret');
+    expect(serialized).not.toContain('auth-token');
+    expect(serialized).not.toContain('nested-token');
+    expect(serialized).toContain('***');
+  });
+
+  it('redacts escaped quoted JSON and nested XML in error fault details', () => {
+    const fault = new Error('SOAP fault {\\"Password\\":\\"message-secret\\"}');
+    Object.assign(fault, {
+      faultDetail: {
+        response: '<Fault><Password>xml-secret</Password></Fault>',
+        nested: ['detail {"api_key":"json-token"}'],
+      },
+    });
+
+    const serialized = JSON.stringify(redactCredentials(fault));
+    expect(serialized).not.toContain('message-secret');
+    expect(serialized).not.toContain('xml-secret');
+    expect(serialized).not.toContain('json-token');
+    expect(serialized).toContain('***');
+  });
+
+  it('redacts credential XML elements containing nested CDATA', () => {
+    const redacted = redactCredentials(
+      '<Fault><Password><![CDATA[xml-cdata-secret]]></Password></Fault>'
+    );
+    expect(redacted).not.toContain('xml-cdata-secret');
+    expect(redacted).toContain('***');
+  });
+
   it('redacts case variants, credential-like values, URLs, XML faults, errors, and arrays recursively', () => {
     const fault = new Error(
       'POST https://admin:secret123@cucm.example.test/axl?token=response-token failed: <Password>secret123</Password>'

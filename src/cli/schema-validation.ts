@@ -93,6 +93,25 @@ function shouldEvaluateChoice(
   });
 }
 
+function hasSelectedChoiceSequence(
+  choiceIndex: number,
+  fields: Record<string, FieldSchema>,
+  sequences: SequenceSchema[],
+  value: Record<string, unknown>
+): boolean {
+  const sequenceIndexes = [
+    ...new Set(
+      Object.values(fields)
+        .filter(field => memberships(field.choice).includes(choiceIndex))
+        .flatMap(field => memberships(field.sequence))
+    ),
+  ];
+  return sequenceIndexes.some(sequenceIndex => {
+    const sequence = sequences[sequenceIndex];
+    return sequence?.fields.some(field => hasOwn(value, field)) === true;
+  });
+}
+
 function buildAttributeValueSchema(
   attribute: AttributeSchema,
   enums: Record<string, string[]>
@@ -149,7 +168,8 @@ function buildObjectSchema(
   choices: ChoiceSchema[],
   sequences: SequenceSchema[],
   attributes: Record<string, AttributeSchema>,
-  enums: Record<string, string[]>
+  enums: Record<string, string[]>,
+  explicitObject = false
 ): z.ZodType {
   const shape: Record<string, z.ZodType> = {};
   for (const [name, field] of Object.entries(fields)) {
@@ -181,7 +201,11 @@ function buildObjectSchema(
       if (!shouldEvaluateChoice(choiceIndex, choice, fields, sequences, value)) continue;
       let selected = 0;
       let partial = false;
+      let hasEmptiableOption = false;
       for (const option of choice.options) {
+        if (option.every(field => (fields[field]?.minOccurs ?? 1) === 0)) {
+          hasEmptiableOption = true;
+        }
         const present = option.filter(field => hasOwn(value, field));
         if (present.length === 0) continue;
         const missingRequired = option.filter(
@@ -189,6 +213,14 @@ function buildObjectSchema(
         );
         if (missingRequired.length === 0) selected++;
         else partial = true;
+      }
+      if (
+        selected === 0 &&
+        !partial &&
+        hasEmptiableOption &&
+        (explicitObject || hasSelectedChoiceSequence(choiceIndex, fields, sequences, value))
+      ) {
+        selected = 1;
       }
       const maximum =
         choice.maxOccurs === 'unbounded' ? Number.POSITIVE_INFINITY : choice.maxOccurs;
@@ -279,7 +311,8 @@ function buildFieldSchema(field: FieldSchema, enums: Record<string, string[]>): 
               field.choices ?? [],
               field.sequences ?? [],
               field.attributes ?? {},
-              enums
+              enums,
+              true
             )
           : z.record(z.string(), z.unknown());
         break;

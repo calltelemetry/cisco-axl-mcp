@@ -2,9 +2,14 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { AxlPolicyError } from '../types/axl/errors';
 import { isSupportedCucmVersion } from './version-manager';
 import { loadAxlVersionArtifacts } from '../types/generated/axl-version-loader';
-import type { OperationMetadata } from '../types/generated/axl-generated-types';
 import { assertTlsMode, type ExecuteOperationOptions, type TlsMode } from './axl-client';
 import type { CucmCredentials } from '../types/credentials';
+import { isMutationOperation } from './operation-classification-core';
+
+export {
+  isMutationOperation,
+  isMutationOperationFromCatalog,
+} from './operation-classification-core';
 
 export interface MutationGrantRequest {
   credentials: CucmCredentials;
@@ -388,13 +393,6 @@ function digestNormalizedMutationRequest(request: NormalizedMutationGrantRequest
 
 export function createMutationRequestDigest(request: MutationGrantRequest): string {
   return digestNormalizedMutationRequest(normalizeMutationRequest(request));
-}
-
-export function isMutationOperation(operation: string, metadata: OperationMetadata): boolean {
-  if (operation === 'executeSQLQuery') return false;
-  if (metadata.kind === 'crud' && (metadata.verb === 'get' || metadata.verb === 'list'))
-    return false;
-  return true;
 }
 
 export async function createMutationGrant(

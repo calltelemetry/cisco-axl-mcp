@@ -2,7 +2,9 @@ import type { CucmCredentials } from '../../types/credentials';
 import type { ExecuteOperationOptions, TlsMode } from '../../lib/axl-client';
 import { getAxlClient } from '../../lib/axl-client';
 import { withRetry, isRetryable, isThrottleError } from '../../lib/retry';
+import { isMutationOperationFromCatalog } from '../../lib/operation-classification-core';
 import { AxlPolicyError } from '../../types/axl/errors';
+import { AXL_OPERATION_METADATA } from '../../types/generated/axl-latest';
 import {
   getAdaptiveDelay,
   recordOperation,
@@ -12,12 +14,6 @@ import {
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function isMutationRetryRisk(operation: string): boolean {
-  return (
-    operation !== 'executeSQLQuery' && !operation.startsWith('get') && !operation.startsWith('list')
-  );
 }
 
 export class AxlAPIService {
@@ -37,7 +33,7 @@ export class AxlAPIService {
     }
 
     const startTime = Date.now();
-    const mutation = isMutationRetryRisk(operation);
+    const mutation = isMutationOperationFromCatalog(operation, AXL_OPERATION_METADATA);
 
     try {
       const result = await withRetry(

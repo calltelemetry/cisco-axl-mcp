@@ -266,6 +266,29 @@ describe('runAxl policy separation', () => {
     ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUIRED' });
     expect(fake.executeOperation).not.toHaveBeenCalled();
   });
+
+  it('dispatches generated executeSQLQueryInactive as a strict read without a grant', async () => {
+    const fake = service({ rows: [] });
+    const readRequest = request({
+      credentials: { ...request().credentials, version: '15.0' },
+      operation: 'executeSQLQueryInactive',
+      data: { sql: 'select name from device' },
+    });
+
+    await expect(
+      runAxl(
+        { request: readRequest, source: 'cli', validationMode: 'strict' },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).resolves.toEqual({ rows: [] });
+    expect(fake.executeOperation).toHaveBeenCalledWith(
+      readRequest.credentials,
+      readRequest.operation,
+      readRequest.data,
+      undefined,
+      readRequest.tlsMode
+    );
+  });
 });
 
 describe('mutation grant enforcement', () => {

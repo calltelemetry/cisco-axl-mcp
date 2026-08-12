@@ -238,6 +238,35 @@ describe('AxlAPIService.executeOperation', () => {
     }
   });
 
+  it.each(['12.5', '14.0', '15.0'])(
+    'retries executeSQLQueryInactive as a CUCM %s read and preserves the transport failure',
+    async version => {
+      const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+      const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      process.env.AXL_MCP_MAX_RETRIES = '1';
+      process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+      mockClient.executeOperation.mockRejectedValue(new Error('503 Service Unavailable'));
+
+      try {
+        const service = new AxlAPIService();
+        const failure = await service
+          .executeOperation({ ...creds, version }, 'executeSQLQueryInactive', {
+            sql: 'select name from device',
+          })
+          .catch((error: unknown) => error);
+
+        expect(failure).toMatchObject({ message: '503 Service Unavailable' });
+        expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+        expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+      } finally {
+        if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+        else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+        if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+        else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      }
+    }
+  );
+
   it('applies adaptive delay when recent throttle events exist', async () => {
     // Seed audit log with a recent throttle event
     writeAuditEntry(creds.host, {

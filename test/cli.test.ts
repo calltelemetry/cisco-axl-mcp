@@ -333,6 +333,85 @@ describe('operation payload validation', () => {
     ).toEqual({ uuid: 'abc', removeAppUsers: {} });
   });
 
+  it('allows an explicit empty object to select a required all-optional choice branch', () => {
+    const schema: OperationSchema = {
+      verb: 'update',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        container: {
+          type: 'object',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          fields: {
+            optionalValue: {
+              type: 'string',
+              minOccurs: 0,
+              maxOccurs: 1,
+              nillable: false,
+              choice: 0,
+            },
+          },
+          choices: [{ minOccurs: 1, maxOccurs: 1, options: [['optionalValue']] }],
+        },
+      },
+      choices: [],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(validateOperationInput(schema, {}, { container: {} })).toEqual({ container: {} });
+  });
+
+  it('still rejects an explicit empty object when its required choice branch has a required member', () => {
+    const schema: OperationSchema = {
+      verb: 'update',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        container: {
+          type: 'object',
+          minOccurs: 1,
+          maxOccurs: 1,
+          nillable: false,
+          fields: {
+            requiredValue: {
+              type: 'string',
+              minOccurs: 1,
+              maxOccurs: 1,
+              nillable: false,
+              choice: 0,
+            },
+          },
+          choices: [{ minOccurs: 1, maxOccurs: 1, options: [['requiredValue']] }],
+        },
+      },
+      choices: [],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(() => validateOperationInput(schema, {}, { container: {} })).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({ path: 'container', kind: 'choice' }),
+        ]),
+      })
+    );
+  });
+
+  it('accepts generated CUCM 15 updateUser customUserFields as an explicit empty branch', async () => {
+    const artifacts = await loadAxlVersionArtifacts('15.0');
+
+    expect(
+      validateOperationInput(artifacts.operationSchemas.updateUser!, artifacts.enums, {
+        uuid: 'abc',
+        customUserFields: {},
+      })
+    ).toEqual({ uuid: 'abc', customUserFields: {} });
+  });
+
   it('rejects a generated CUCM 15 addPhone payload missing occurrence-required fields', async () => {
     const artifacts = await loadAxlVersionArtifacts('15.0');
 
@@ -919,6 +998,26 @@ describe('CLI execution', () => {
       source: 'cli',
       validationMode: 'strict',
       request: { operation: 'executeSQLQuery', data: { sql: 'select name from device' } },
+    });
+    expect(cli.calls[0]!.mutationGrant).toBeUndefined();
+  });
+
+  it('dispatches executeSQLQueryInactive as read-only without mutation flags or a grant', async () => {
+    const cli = harness();
+
+    expect(
+      await runCli(
+        ['execute', 'executeSQLQueryInactive', '--data', '{"sql":"select name from device"}'],
+        cli.dependencies
+      )
+    ).toBe(0);
+    expect(cli.calls[0]).toMatchObject({
+      source: 'cli',
+      validationMode: 'strict',
+      request: {
+        operation: 'executeSQLQueryInactive',
+        data: { sql: 'select name from device' },
+      },
     });
     expect(cli.calls[0]!.mutationGrant).toBeUndefined();
   });

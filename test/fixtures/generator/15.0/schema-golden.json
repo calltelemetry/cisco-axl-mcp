@@ -1,0 +1,78 @@
+{
+  "sourceDigests": {
+    "wsdlSha256": "2d143722ece49b2b30473a7d5040628d34eab106f6dcefa96dbf19676052271f",
+    "schemaSha256": "637cee767b1eb6c3c7ede9f36de9b2aa8514397844d7a25f78e36128a585e079",
+    "enumsSha256": "2c911c6e60d453d2102b730a5ab0c9f35497598dfbea582a513e6de23c64154c"
+  },
+  "operationSchemaDigest": "793a626515bf7071ac6977529c9ed4b1563bf9b88c4867c223d9e23bcc16cd93",
+  "catalogOperations": [
+    "listCallManager",
+    "getCallManager",
+    "updateEnterprisePhoneConfig",
+    "doDeviceReset"
+  ],
+  "getCallManager": {
+    "verb": "get",
+    "object": "CallManager",
+    "choices": [
+      {
+        "minOccurs": 1,
+        "maxOccurs": 1,
+        "options": [
+          ["name"],
+          ["uuid"]
+        ]
+      }
+    ],
+    "name": {
+      "type": "string",
+      "minOccurs": 1,
+      "maxOccurs": 1,
+      "nillable": false,
+      "typeName": "String100",
+      "choice": 0
+    },
+    "uuid": {
+      "type": "string",
+      "minOccurs": 1,
+      "maxOccurs": 1,
+      "nillable": false,
+      "typeName": "XUUID",
+      "choice": 0
+    }
+  },
+  "repeatedPhoneLine": {
+    "type": "array",
+    "minOccurs": 1,
+    "maxOccurs": "unbounded",
+    "nillable": false,
+    "typeName": "XPhoneLine",
+    "choice": 0,
+    "itemType": "object",
+    "itemTypeName": "XPhoneLine",
+    "itemIndex": {
+      "type": "integer",
+      "minOccurs": 1,
+      "maxOccurs": 1,
+      "nillable": false,
+      "required": true,
+      "typeName": "XInteger"
+    },
+    "itemDirnPattern": {
+      "type": "string",
+      "minOccurs": 1,
+      "maxOccurs": 1,
+      "nillable": false,
+      "required": true
+    }
+  },
+  "protocolEnum": ["SCCP", "Digital Access PRI", "H.225", "Analog Access", "Digital Access T1", "Route Point", "Unicast Bridge", "Multicast Point", "Inter-Cluster Trunk", "RAS", "Digital Access BRI", "SIP", "MGCP", "Static SIP Mobile Subscriber", "SIP Connector", "Remote Destination", "Mobile Smart Client", "Digital Access E1 R2", "CTI Remote Device", "Protocol Not Specified"],
+  "vendorConfig": {
+    "type": "opaque",
+    "minOccurs": 0,
+    "maxOccurs": 1,
+    "nillable": true,
+    "typeName": "XVendorConfig",
+    "opaque": true
+  }
+}

@@ -447,6 +447,47 @@ describe('redactCredentials', () => {
     expect(redacted).toContain('***');
   });
 
+  it('redacts auth aliases and numeric credentials in nested and quoted fault data', () => {
+    const fault = new Error(
+      'SOAP fault {"auth":"json-auth-secret","password":123456,"nested":{"access_key":98765,"token":24680}}'
+    );
+    Object.assign(fault, {
+      detail: {
+        auth: 'structured-auth-secret',
+        passcode: 112233,
+        nested: [
+          '<Fault><Auth>xml-auth-secret</Auth><access_key>xml-access-secret</access_key></Fault>',
+        ],
+      },
+    });
+
+    const serialized = JSON.stringify(redactCredentials(fault));
+    for (const secret of [
+      'json-auth-secret',
+      '123456',
+      '98765',
+      '24680',
+      'structured-auth-secret',
+      '112233',
+      'xml-auth-secret',
+      'xml-access-secret',
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect(serialized).toContain('***');
+  });
+
+  it('redacts arbitrary authorization schemes as a complete header value', () => {
+    const redacted = String(
+      redactCredentials('SOAP fault\nAuthorization: Token scheme-secret\nFault-Code: 500')
+    );
+
+    expect(redacted).not.toContain('Token');
+    expect(redacted).not.toContain('scheme-secret');
+    expect(redacted).toContain('Authorization: ***');
+    expect(redacted).toContain('Fault-Code: 500');
+  });
+
   it('redacts case variants, credential-like values, URLs, XML faults, errors, and arrays recursively', () => {
     const fault = new Error(
       'POST https://admin:secret123@cucm.example.test/axl?token=response-token failed: <Password>secret123</Password>'

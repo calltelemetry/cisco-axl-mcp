@@ -29,6 +29,133 @@ export interface MutationGrant {
 
 type UnsignedMutationGrant = Omit<MutationGrant, 'provenance'>;
 
+const UNSIGNED_GRANT_FIELDS = [
+  'id',
+  'issuedAt',
+  'expiresAt',
+  'target',
+  'operation',
+  'requestDigest',
+  'schemaDigest',
+  'packageVersion',
+] as const;
+const GRANT_FIELDS = [...UNSIGNED_GRANT_FIELDS, 'provenance'] as const;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const VERSION_PATTERN = /^\d+(?:\.\d+)+$/;
+
+function invalidGrant(field: string, reason: string): never {
+  throw new AxlPolicyError(
+    'AXL_MUTATION_GRANT_INVALID',
+    `Mutation grant ${field} is invalid: ${reason}`
+  );
+}
+
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some(character => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
+function readPlainDataRecord(
+  value: unknown,
+  field: string,
+  expectedKeys: readonly string[]
+): Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    invalidGrant(field, 'must be a plain object');
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    invalidGrant(field, 'symbol properties are not allowed');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors).sort();
+  const wanted = [...expectedKeys].sort();
+  if (keys.length !== wanted.length || keys.some((key, index) => key !== wanted[index])) {
+    invalidGrant(field, 'has missing or unexpected fields');
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const key of expectedKeys) {
+    const descriptor = descriptors[key];
+    if (!descriptor?.enumerable || !('value' in descriptor)) {
+      invalidGrant(`${field}.${key}`, 'must be an enumerable data property');
+    }
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
+function requiredString(value: unknown, field: string, maxLength = 512): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value !== value.trim() ||
+    hasControlCharacters(value)
+  ) {
+    invalidGrant(field, 'must be a non-empty trimmed primitive string');
+  }
+  return value;
+}
+
+function timestampString(value: unknown, field: string): string {
+  const timestamp = requiredString(value, field, 64);
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== timestamp) {
+    invalidGrant(field, 'must be an ISO-8601 UTC timestamp');
+  }
+  return timestamp;
+}
+
+function digestString(value: unknown, field: string): string {
+  const digest = requiredString(value, field, 64);
+  if (!SHA256_HEX_PATTERN.test(digest)) {
+    invalidGrant(field, 'must be a lowercase SHA-256 digest');
+  }
+  return digest;
+}
+
+function validateUnsignedGrant(value: unknown): UnsignedMutationGrant {
+  const grant = readPlainDataRecord(value, 'object', UNSIGNED_GRANT_FIELDS);
+  const target = readPlainDataRecord(grant.target, 'target', ['host', 'version']);
+  const id = requiredString(grant.id, 'id', 256);
+  if (!OPAQUE_ID_PATTERN.test(id)) invalidGrant('id', 'has an unsupported format');
+  const host = requiredString(target.host, 'target.host', 253);
+  if (host !== host.toLowerCase() || /\s/.test(host)) {
+    invalidGrant('target.host', 'must be a normalized host');
+  }
+  const version = requiredString(target.version, 'target.version', 32);
+  if (!VERSION_PATTERN.test(version)) invalidGrant('target.version', 'has an unsupported format');
+
+  return Object.freeze({
+    id,
+    issuedAt: timestampString(grant.issuedAt, 'issuedAt'),
+    expiresAt: timestampString(grant.expiresAt, 'expiresAt'),
+    target: Object.freeze({ host, version }),
+    operation: requiredString(grant.operation, 'operation', 256),
+    requestDigest: digestString(grant.requestDigest, 'requestDigest'),
+    schemaDigest: digestString(grant.schemaDigest, 'schemaDigest'),
+    packageVersion: requiredString(grant.packageVersion, 'packageVersion', 128),
+  });
+}
+
+function validateGrant(value: unknown): MutationGrant {
+  const grant = readPlainDataRecord(value, 'object', GRANT_FIELDS);
+  const unsigned = validateUnsignedGrant(
+    Object.fromEntries(UNSIGNED_GRANT_FIELDS.map(field => [field, grant[field]]))
+  );
+  return Object.freeze({
+    ...unsigned,
+    provenance: digestString(grant.provenance, 'provenance'),
+  });
+}
+
 function provenancePayload(grant: UnsignedMutationGrant): string {
   return JSON.stringify([
     grant.id,
@@ -57,15 +184,17 @@ export class MutationGrantAuthority {
   }
 
   sign(grant: UnsignedMutationGrant): string {
-    return createHmac('sha256', this.key).update(provenancePayload(grant)).digest('hex');
+    const validated = validateUnsignedGrant(grant);
+    return createHmac('sha256', this.key).update(provenancePayload(validated)).digest('hex');
   }
 
   verify(grant: MutationGrant): boolean {
-    if (typeof grant.provenance !== 'string' || !/^[a-f0-9]{64}$/.test(grant.provenance)) {
-      return false;
-    }
-    const expected = Buffer.from(this.sign(grant), 'hex');
-    const received = Buffer.from(grant.provenance, 'hex');
+    const validated = validateGrant(grant);
+    const expected = Buffer.from(
+      createHmac('sha256', this.key).update(provenancePayload(validated)).digest('hex'),
+      'hex'
+    );
+    const received = Buffer.from(validated.provenance, 'hex');
     return received.length === expected.length && timingSafeEqual(received, expected);
   }
 }
@@ -99,7 +228,22 @@ type JsonValue =
   null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
 export interface NormalizedMutationGrantRequest extends MutationGrantRequest {
+  operation: string;
   data: { readonly [key: string]: JsonValue };
+}
+
+export function normalizeAxlOperation(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new AxlPolicyError('AXL_OPERATION_INVALID', 'AXL operation must be a primitive string');
+  }
+  const operation = value.trim();
+  if (!operation || operation.length > 256 || hasControlCharacters(operation)) {
+    throw new AxlPolicyError(
+      'AXL_OPERATION_INVALID',
+      'AXL operation must be a non-empty string without control characters'
+    );
+  }
+  return operation;
 }
 
 function invalidJson(path: string, reason: string): never {
@@ -189,6 +333,7 @@ export function normalizeMutationRequest(
   request: MutationGrantRequest
 ): NormalizedMutationGrantRequest {
   assertTlsMode(request.tlsMode);
+  const operation = normalizeAxlOperation(request.operation);
   const data = normalizeJsonValue(request.data, 'data');
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
     invalidJson('data', 'the top-level AXL payload must be an object');
@@ -223,7 +368,7 @@ export function normalizeMutationRequest(
   return Object.freeze({
     credentials,
     tlsMode: request.tlsMode,
-    operation: request.operation,
+    operation,
     data: normalizedData,
     ...(opts !== undefined && { opts }),
     autoPage: request.autoPage === true,
@@ -258,6 +403,9 @@ export async function createMutationGrant(
 ): Promise<MutationGrant> {
   const now = context.now?.() ?? Date.now();
   const normalizedRequest = normalizeMutationRequest(options.request);
+  if (typeof options.expiresAt !== 'string') {
+    invalidGrant('expiresAt', 'must be a primitive string');
+  }
   const expiresAt = Date.parse(options.expiresAt);
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
     throw new AxlPolicyError(
@@ -265,10 +413,16 @@ export async function createMutationGrant(
       'Mutation grant expiry must be a future timestamp'
     );
   }
-  if (!options.packageVersion.trim()) {
+  if (typeof options.packageVersion !== 'string' || !options.packageVersion.trim()) {
     throw new AxlPolicyError(
       'AXL_MUTATION_GRANT_PACKAGE_INVALID',
       'Mutation grants require a package version'
+    );
+  }
+  if (options.id !== undefined && typeof options.id !== 'string') {
+    throw new AxlPolicyError(
+      'AXL_MUTATION_GRANT_ID_INVALID',
+      'Mutation grant id must be a primitive string'
     );
   }
   if (options.id !== undefined && !options.id.trim()) {
@@ -329,7 +483,7 @@ export function consumeMutationGrant(options: {
   authority?: MutationGrantAuthority;
   now?: () => number;
 }): NormalizedMutationGrantRequest {
-  const { grant } = options;
+  const grant = validateGrant(options.grant);
   const request = normalizeMutationRequest(options.request);
   const now = options.now?.() ?? Date.now();
   const expiresAt = Date.parse(grant.expiresAt);

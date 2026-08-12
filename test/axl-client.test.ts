@@ -187,4 +187,35 @@ describe('getAxlClient', () => {
     );
     expect(clientObservations.constructorCalls).toHaveLength(0);
   });
+
+  it.each([
+    [{ CUCM_AXL_TLS_MODE: 'typo' }, 'CUCM_AXL_TLS_MODE'],
+    [{ MCP_TLS_MODE: 'typo' }, 'MCP_TLS_MODE'],
+    [{ CUCM_AXL_TLS_MODE: '', MCP_TLS_MODE: 'strict' }, 'CUCM_AXL_TLS_MODE'],
+  ] as const)(
+    'rejects an invalid configured MCP TLS environment %#',
+    async (environment, field) => {
+      const { resolveMcpTlsMode } = await import('../src/lib/axl-client');
+
+      expect(() => resolveMcpTlsMode(environment)).toThrowError(
+        expect.objectContaining({
+          code: 'AXL_TLS_MODE_INVALID',
+          message: expect.stringContaining(field),
+        })
+      );
+    }
+  );
+
+  it.each([
+    [{}, 'insecure'],
+    [{ CUCM_AXL_TLS_MODE: 'default' }, 'insecure'],
+    [{ CUCM_AXL_TLS_MODE: 'insecure' }, 'insecure'],
+    [{ CUCM_AXL_TLS_MODE: 'secure' }, 'secure'],
+    [{ CUCM_AXL_TLS_MODE: 'strict' }, 'secure'],
+    [{ MCP_TLS_MODE: 'verify' }, 'secure'],
+  ] as const)('maps valid MCP TLS environment %# to %s', async (environment, expected) => {
+    const { resolveMcpTlsMode } = await import('../src/lib/axl-client');
+
+    expect(resolveMcpTlsMode(environment)).toBe(expected);
+  });
 });

@@ -10,6 +10,8 @@ import {
   consumeMutationGrant,
   defaultMutationGrantReplayStore,
   isMutationOperation,
+  normalizeAxlOperation,
+  normalizeMutationRequest,
   type MutationGrant,
   type MutationGrantAuthority,
   type MutationGrantReplayStore,
@@ -65,7 +67,8 @@ export async function runAxl(
     );
   }
   assertTlsMode(request.tlsMode);
-  let dispatchRequest = request;
+  const operation = normalizeAxlOperation(request.operation);
+  let dispatchRequest: AxlRunRequest = Object.freeze({ ...request, operation });
 
   if (validationMode === 'compatible' && source !== 'mcp') {
     throw new AxlPolicyError(
@@ -75,32 +78,34 @@ export async function runAxl(
   }
 
   if (validationMode === 'strict') {
-    if (!isSupportedCucmVersion(request.credentials.version)) {
+    const strictRequest = normalizeMutationRequest({ ...request, operation });
+    dispatchRequest = strictRequest;
+    if (!isSupportedCucmVersion(strictRequest.credentials.version)) {
       throw new AxlPolicyError(
         'AXL_UNSUPPORTED_VERSION',
-        `Unsupported CUCM version "${request.credentials.version}"`
+        `Unsupported CUCM version "${strictRequest.credentials.version}"`
       );
     }
 
-    const artifacts = await loadAxlVersionArtifacts(request.credentials.version);
-    const metadata = artifacts.operationMetadata[request.operation];
+    const artifacts = await loadAxlVersionArtifacts(strictRequest.credentials.version);
+    const metadata = artifacts.operationMetadata[strictRequest.operation];
     if (!metadata) {
       throw new AxlPolicyError(
         'AXL_UNSUPPORTED_OPERATION',
-        `Operation "${request.operation}" is not available for CUCM ${request.credentials.version}`
+        `Operation "${strictRequest.operation}" is not available for CUCM ${strictRequest.credentials.version}`
       );
     }
 
-    if (isMutationOperation(request.operation, metadata)) {
+    if (isMutationOperation(strictRequest.operation, metadata)) {
       if (!mutationGrant) {
         throw new AxlPolicyError(
           'AXL_MUTATION_GRANT_REQUIRED',
-          `Operation "${request.operation}" requires a mutation grant`
+          `Operation "${strictRequest.operation}" requires a mutation grant`
         );
       }
       dispatchRequest = consumeMutationGrant({
         grant: mutationGrant,
-        request,
+        request: strictRequest,
         packageVersion,
         schemaDigest: artifacts.operationSchemaDigest,
         replayStore: dependencies.replayStore ?? defaultMutationGrantReplayStore,
@@ -110,7 +115,7 @@ export async function runAxl(
     } else if (mutationGrant) {
       throw new AxlPolicyError(
         'AXL_MUTATION_GRANT_NOT_REQUIRED',
-        `Operation "${request.operation}" is read-only and does not accept a mutation grant`
+        `Operation "${strictRequest.operation}" is read-only and does not accept a mutation grant`
       );
     }
   }

@@ -1,18 +1,6 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
-// Preserve the MCP's legacy self-signed-certificate default as an explicit,
-// per-client setting. Opt into strict verification with:
-// - CUCM_AXL_TLS_MODE=strict (recommended for prod)
-// - MCP_TLS_MODE=strict
-const configuredTlsMode = (
-  process.env.CUCM_AXL_TLS_MODE ||
-  process.env.MCP_TLS_MODE ||
-  ''
-).toLowerCase();
-const mcpTlsMode =
-  configuredTlsMode === 'strict' || configuredTlsMode === 'verify' ? 'secure' : 'insecure';
-
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -25,6 +13,11 @@ import {
 import { AxlAPIService } from './services/axl/index';
 import { getTools, handleTool } from './tools/index';
 import { toMcpError } from './types/axl/errors';
+import { resolveMcpTlsMode } from './lib/axl-client';
+
+// Preserve the MCP's legacy self-signed-certificate default only when mode is
+// unset or explicitly configured as default/insecure. Invalid values fail startup.
+const mcpTlsMode = resolveMcpTlsMode(process.env);
 
 class CiscoAxlMcpServer {
   private server: Server;

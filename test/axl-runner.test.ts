@@ -112,6 +112,26 @@ describe('runAxl policy separation', () => {
     expect(fake.executeOperation).not.toHaveBeenCalled();
   });
 
+  it('rejects an object-valued compatible operation without invoking coercion hooks', async () => {
+    const fake = service();
+    const toString = vi.fn(() => 'getPhone');
+    const toJSON = vi.fn(() => 'getPhone');
+
+    await expect(
+      runAxl(
+        {
+          request: request({ operation: { toString, toJSON } as unknown as string }),
+          source: 'mcp',
+          validationMode: 'compatible',
+        },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_OPERATION_INVALID' });
+    expect(toString).not.toHaveBeenCalled();
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
   it('rejects operations absent from the selected version catalog in strict mode', async () => {
     const fake = service();
 
@@ -297,6 +317,88 @@ describe('mutation grant enforcement', () => {
     expect(fake.executeOperation).not.toHaveBeenCalled();
   });
 
+  it('rejects an object-valued grant id without invoking hooks or consuming replay state', async () => {
+    const fake = service();
+    const replayStore = new MutationGrantReplayStore();
+    const consume = vi.spyOn(replayStore, 'consume');
+    const toJSON = vi.fn(() => 'preview-123');
+    const mutationGrant = {
+      ...(await grant()),
+      id: { toJSON },
+    } as unknown as Awaited<ReturnType<typeof grant>>;
+
+    await expect(
+      runAxl(
+        {
+          request: writeRequest,
+          source: 'workflow',
+          validationMode: 'strict',
+          mutationGrant,
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          replayStore,
+        }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_INVALID' });
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it('rejects an object-valued grant id before HMAC signing without invoking hooks', async () => {
+    const authority = new MutationGrantAuthority(Buffer.alloc(32, 7));
+    const { provenance: _provenance, ...unsignedGrant } = await createMutationGrant(
+      {
+        request: writeRequest,
+        packageVersion: PACKAGE_VERSION,
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+      { now: () => NOW, authority }
+    );
+    const toJSON = vi.fn(() => 'preview-123');
+
+    expect(() => authority.sign({ ...unsignedGrant, id: { toJSON } } as never)).toThrowError(
+      expect.objectContaining({ code: 'AXL_MUTATION_GRANT_INVALID' })
+    );
+    expect(toJSON).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['id', { id: 42 }],
+    ['issued timestamp', { issuedAt: 'not-a-timestamp' }],
+    ['expiry timestamp', { expiresAt: '2026-08-12' }],
+    ['target object', { target: [] }],
+    ['target host', { target: { host: '', version: '14.0' } }],
+    ['target version', { target: { host: 'cucm-a.example.test', version: 'fourteen' } }],
+    ['operation', { operation: '' }],
+    ['request digest', { requestDigest: 'not-a-digest' }],
+    ['schema digest', { schemaDigest: 'not-a-digest' }],
+    ['package version', { packageVersion: {} }],
+    ['provenance', { provenance: 'not-a-mac' }],
+  ] as const)('rejects malformed grant %s before replay consumption', async (_field, mutation) => {
+    const replayStore = new MutationGrantReplayStore();
+    const consume = vi.spyOn(replayStore, 'consume');
+    const mutationGrant = {
+      ...(await grant()),
+      ...mutation,
+    } as unknown as Awaited<ReturnType<typeof grant>>;
+
+    expect(() =>
+      consumeMutationGrant({
+        grant: mutationGrant,
+        request: writeRequest,
+        packageVersion: PACKAGE_VERSION,
+        schemaDigest: mutationGrant.schemaDigest,
+        now: () => NOW,
+        replayStore,
+      })
+    ).toThrowError(expect.objectContaining({ code: 'AXL_MUTATION_GRANT_INVALID' }));
+    expect(consume).not.toHaveBeenCalled();
+  });
+
   it('rejects a grant applied to a different target', async () => {
     const fake = service();
 
@@ -442,6 +544,27 @@ describe('mutation grant enforcement', () => {
     ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_REQUEST_INVALID' });
   });
 
+  it('rejects an object-valued mutation operation without invoking coercion hooks', async () => {
+    const toString = vi.fn(() => 'updatePhone');
+    const toJSON = vi.fn(() => 'updatePhone');
+
+    await expect(
+      createMutationGrant(
+        {
+          request: {
+            ...writeRequest,
+            operation: { toString, toJSON } as unknown as string,
+          },
+          packageVersion: PACKAGE_VERSION,
+          expiresAt: new Date(NOW + 60_000).toISOString(),
+        },
+        { now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_OPERATION_INVALID' });
+    expect(toString).not.toHaveBeenCalled();
+    expect(toJSON).not.toHaveBeenCalled();
+  });
+
   it('rejects cyclic mutation data', async () => {
     const data: Record<string, unknown> = { name: 'SEP001122334455' };
     data.self = data;
@@ -561,6 +684,47 @@ describe('mutation grant enforcement', () => {
     expect(Object.isFrozen(dispatchedData)).toBe(true);
     expect(Object.isFrozen((dispatchedData as { nested: object }).nested)).toBe(true);
     expect(Object.isFrozen(dispatchedOptions)).toBe(true);
+  });
+
+  it('dispatches the approved snapshot when the original operation and data mutate after apply starts', async () => {
+    const fake = service({ updated: true });
+    const data = { name: 'SEP001122334455', nested: { description: 'approved' } };
+    const applyRequest = { ...writeRequest, data };
+    const mutationGrant = await createMutationGrant(
+      {
+        request: applyRequest,
+        packageVersion: PACKAGE_VERSION,
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+      { now: () => NOW }
+    );
+
+    const execution = runAxl(
+      {
+        request: applyRequest,
+        source: 'workflow',
+        validationMode: 'strict',
+        mutationGrant,
+      },
+      {
+        service: fake.api,
+        packageVersion: PACKAGE_VERSION,
+        now: () => NOW,
+        replayStore: new MutationGrantReplayStore(),
+      }
+    );
+    applyRequest.operation = 'removePhone';
+    data.name = 'MUTATED';
+    data.nested.description = 'mutated';
+
+    await expect(execution).resolves.toEqual({ updated: true });
+    expect(fake.executeOperation).toHaveBeenCalledWith(
+      expect.anything(),
+      'updatePhone',
+      { name: 'SEP001122334455', nested: { description: 'approved' } },
+      undefined,
+      'secure'
+    );
   });
 
   it('rejects package drift between preview and apply', async () => {

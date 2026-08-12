@@ -120,6 +120,13 @@ export async function runAxl(
     }
   }
 
+  const sensitiveValues = [request.credentials.password, request.credentials.username];
+  const redactResponse = (result: unknown): unknown =>
+    redactCredentials(result, sensitiveValues, {
+      kind: 'axl-response',
+      operation: dispatchRequest.operation,
+    });
+
   try {
     if (dispatchRequest.autoPage === true) {
       if (!dispatchRequest.operation.startsWith('list')) {
@@ -145,10 +152,7 @@ export async function runAxl(
         dispatchRequest.opts,
         dispatchRequest.tlsMode
       );
-      return redactCredentials(result, [
-        request.credentials.password,
-        request.credentials.username,
-      ]);
+      return redactResponse(result);
     }
 
     const result = await service.executeOperation(
@@ -158,8 +162,8 @@ export async function runAxl(
       dispatchRequest.opts,
       dispatchRequest.tlsMode
     );
-    return redactCredentials(result, [request.credentials.password, request.credentials.username]);
+    return redactResponse(result);
   } catch (error) {
-    throw sanitizeError(error, [request.credentials.password, request.credentials.username]);
+    throw sanitizeError(error, sensitiveValues);
   }
 }

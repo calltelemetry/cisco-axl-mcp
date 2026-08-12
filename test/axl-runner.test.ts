@@ -182,6 +182,47 @@ describe('runAxl policy separation', () => {
     expect(serialized).toContain('SEP001122334455');
   });
 
+  it('preserves a getUser response wrapper while redacting nested credential aliases', async () => {
+    const fake = service({
+      return: {
+        user: {
+          userid: 'alice',
+          firstName: 'Alice',
+          username: 'directory-login',
+          password: 'directory-password',
+          nested: {
+            user: 'nested-user-credential',
+            authToken: 'directory-token',
+          },
+        },
+      },
+    });
+
+    const result = await runAxl(
+      {
+        request: request({ operation: 'getUser', data: { userid: 'alice' } }),
+        source: 'mcp',
+        validationMode: 'compatible',
+      },
+      { service: fake.api, packageVersion: PACKAGE_VERSION }
+    );
+
+    expect(result).toEqual({
+      return: {
+        user: {
+          userid: 'alice',
+          firstName: 'Alice',
+          username: '***',
+          password: '***',
+          nested: {
+            user: '***',
+            authToken: '***',
+          },
+        },
+      },
+    });
+  });
+
   it('redacts credentials from SOAP faults before exposing an error', async () => {
     const fault = new Error(
       'POST https://axl-admin:correct horse battery staple@cucm-a.example.test/axl failed'

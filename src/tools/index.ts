@@ -10,13 +10,11 @@ import {
   AXL_ACTION_OPERATIONS,
   AXL_OBJECT_OPERATIONS,
   AXL_OBJECTS_SOURCE_WSDL_VERSION,
-  AXL_TOP_LEVEL_OBJECTS,
-  type AxlTopLevelObject,
-} from '../types/generated/axl-objects';
-import {
   AXL_OPERATION_SCHEMAS,
   AXL_SCHEMAS_SOURCE_VERSION,
-} from '../types/generated/axl-operation-schemas';
+  AXL_TOP_LEVEL_OBJECTS,
+  type AxlTopLevelObject,
+} from '../types/generated/axl-latest';
 import type { ExecuteOperationOptions } from '../lib/axl-client';
 
 const OPERATION_TO_OBJECT = (() => {

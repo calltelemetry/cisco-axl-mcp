@@ -1,10 +1,34 @@
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import * as wsdlSupport from '../src/types/generated/wsdl-support';
 import * as axlObjects from '../src/types/generated/axl-objects';
 import * as operationSchemas from '../src/types/generated/axl-operation-schemas';
+import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 
 const EXPECTED_VERSIONS = ['11.0', '11.5', '12.0', '12.5', '14.0', '15.0'];
+const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
+const GENERATED_FILES = [
+  'generated/axl-top-level-objects.json',
+  'src/types/generated/axl-generated-types.ts',
+  'src/types/generated/axl-latest.ts',
+  'src/types/generated/axl-objects.ts',
+  'src/types/generated/axl-operation-schemas.ts',
+  'src/types/generated/axl-version-loader.ts',
+  'src/types/generated/versions/axl-version-11-0.ts',
+  'src/types/generated/versions/axl-version-11-5.ts',
+  'src/types/generated/versions/axl-version-12-0.ts',
+  'src/types/generated/versions/axl-version-12-5.ts',
+  'src/types/generated/versions/axl-version-14-0.ts',
+  'src/types/generated/versions/axl-version-15-0.ts',
+  'src/types/generated/wsdl-support.ts',
+];
 const CATALOG_OPERATIONS = [
   'listCallManager',
   'getCallManager',
@@ -26,6 +50,25 @@ type GeneratedModules = {
 const support = wsdlSupport as GeneratedModules;
 const objects = axlObjects as GeneratedModules;
 const schemas = operationSchemas as GeneratedModules;
+const execFileAsync = promisify(execFile);
+
+function digest(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+async function listGeneratedFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  async function walk(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const entryPath = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(entryPath);
+      else files.push(relative(root, entryPath));
+    }
+  }
+  await walk(join(root, 'src/types/generated'));
+  await walk(join(root, 'generated'));
+  return files.sort();
+}
 
 function readGolden(version: '11.5' | '15.0'): unknown {
   return JSON.parse(
@@ -137,6 +180,84 @@ function collectBrokenChoiceLinks(
 }
 
 describe('generated AXL version contract', () => {
+  it('fails generation when an enum type has no lexical values', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'cisco-axl-malformed-enum-'));
+    const schemaRoot = join(temporaryRoot, 'schema');
+    const versionRoot = join(schemaRoot, '15.0');
+    const sourceRoot = join(REPO_ROOT, 'node_modules/cisco-axl/schema/15.0');
+    try {
+      await mkdir(versionRoot, { recursive: true });
+      await Promise.all([
+        symlink(join(sourceRoot, 'AXLAPI.wsdl'), join(versionRoot, 'AXLAPI.wsdl')),
+        symlink(join(sourceRoot, 'AXLSoap.xsd'), join(versionRoot, 'AXLSoap.xsd')),
+        writeFile(
+          join(versionRoot, 'AXLEnums.xsd'),
+          '<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema"><xsd:simpleType name="Broken"></xsd:simpleType></xsd:schema>'
+        ),
+      ]);
+
+      await expect(
+        execFileAsync(
+          process.execPath,
+          [
+            join(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs'),
+            join(REPO_ROOT, 'scripts/generate-types.ts'),
+            '--schema-dir',
+            schemaRoot,
+          ],
+          { cwd: temporaryRoot, maxBuffer: 1024 * 1024 }
+        )
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining('Enum type Broken has no enumeration values'),
+      });
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('regenerates all committed artifacts byte-for-byte from the Cisco sources', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'cisco-axl-generator-'));
+    try {
+      await execFileAsync(
+        process.execPath,
+        [
+          join(REPO_ROOT, 'node_modules/tsx/dist/cli.mjs'),
+          join(REPO_ROOT, 'scripts/generate-types.ts'),
+          '--schema-dir',
+          join(REPO_ROOT, 'node_modules/cisco-axl/schema'),
+        ],
+        { cwd: temporaryRoot, maxBuffer: 1024 * 1024 }
+      );
+
+      const committedFiles = await listGeneratedFiles(REPO_ROOT);
+      const regeneratedFiles = await listGeneratedFiles(temporaryRoot);
+      expect(committedFiles).toEqual(GENERATED_FILES);
+      expect(regeneratedFiles).toEqual(GENERATED_FILES);
+
+      for (const file of GENERATED_FILES) {
+        const [committed, regenerated] = await Promise.all([
+          readFile(join(REPO_ROOT, file)),
+          readFile(join(temporaryRoot, file)),
+        ]);
+        expect(digest(regenerated), basename(file)).toBe(digest(committed));
+        expect(regenerated.equals(committed), basename(file)).toBe(true);
+      }
+
+      for (const version of EXPECTED_VERSIONS) {
+        const versionDir = join(REPO_ROOT, 'node_modules/cisco-axl/schema', version);
+        const expectedDigests = support.AXL_SCHEMA_SOURCE_DIGESTS_BY_VERSION?.[version] as
+          Record<string, string> | undefined;
+        expect(expectedDigests).toEqual({
+          wsdlSha256: digest(await readFile(join(versionDir, 'AXLAPI.wsdl'))),
+          schemaSha256: digest(await readFile(join(versionDir, 'AXLSoap.xsd'))),
+          enumsSha256: digest(await readFile(join(versionDir, 'AXLEnums.xsd'))),
+        });
+      }
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('publishes deterministic operation and object catalogs for all supported versions', () => {
     expect(Object.keys(support.OPERATIONS_BY_VERSION ?? {})).toEqual(EXPECTED_VERSIONS);
     expect(Object.keys(objects.AXL_TOP_LEVEL_OBJECTS_BY_VERSION ?? {})).toEqual(EXPECTED_VERSIONS);
@@ -170,6 +291,15 @@ describe('generated AXL version contract', () => {
       expect(actualGolden(version)).toEqual(readGolden(version));
     }
   );
+
+  it.each(['11.5', '15.0'] as const)('loads the %s payload independently', async version => {
+    const artifacts = await loadAxlVersionArtifacts(version);
+    expect(artifacts.version).toBe(version);
+    expect(artifacts.operationSchemas.getCallManager).toBeDefined();
+    expect(artifacts.operationSchemaDigest).toBe(
+      schemas.AXL_OPERATION_SCHEMA_DIGESTS_BY_VERSION?.[version]
+    );
+  });
 
   it('detects a choice option without a field membership backlink', () => {
     const broken: string[] = [];

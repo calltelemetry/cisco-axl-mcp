@@ -17,6 +17,13 @@ const SCHEMA_DIR = resolveSchemaDir();
 const OUT_WSDL_SUPPORT = path.resolve(process.cwd(), 'src/types/generated/wsdl-support.ts');
 const OUT_AXL_OBJECTS = path.resolve(process.cwd(), 'src/types/generated/axl-objects.ts');
 const OUT_OBJECTS_JSON = path.resolve(process.cwd(), 'generated/axl-top-level-objects.json');
+const OUT_GENERATED_TYPES = path.resolve(
+  process.cwd(),
+  'src/types/generated/axl-generated-types.ts'
+);
+const OUT_LATEST = path.resolve(process.cwd(), 'src/types/generated/axl-latest.ts');
+const OUT_VERSION_LOADER = path.resolve(process.cwd(), 'src/types/generated/axl-version-loader.ts');
+const OUT_VERSIONS_DIR = path.resolve(process.cwd(), 'src/types/generated/versions');
 const OUT_OPERATION_SCHEMAS = path.resolve(
   process.cwd(),
   'src/types/generated/axl-operation-schemas.ts'
@@ -209,26 +216,64 @@ function sha256(content: string | Uint8Array): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = [...left];
+  const rightPoints = [...right];
+  for (let index = 0; index < Math.max(leftPoints.length, rightPoints.length); index++) {
+    if (leftPoints[index] === undefined) return -1;
+    if (rightPoints[index] === undefined) return 1;
+    const difference = leftPoints[index]!.codePointAt(0)! - rightPoints[index]!.codePointAt(0)!;
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function compareVersions(left: string, right: string): number {
+  const leftParts = left.split('.').map(Number);
+  const rightParts = right.split('.').map(Number);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return compareCodePoints(left, right);
+}
+
 function stableRecord<T>(entries: Iterable<readonly [string, T]>): Record<string, T> {
   return Object.fromEntries(
-    [...entries].sort(([left], [right]) => left.localeCompare(right))
+    [...entries].sort(([left], [right]) => compareCodePoints(left, right))
   ) as Record<string, T>;
 }
 
 async function parseEnums(enumsXsdPath: string): Promise<Record<string, string[]>> {
   const content = await fs.readFile(enumsXsdPath, 'utf8');
   const enums = new Map<string, string[]>();
-  const typeRegex = /<xsd:simpleType\s+name="([^"]+)">([\s\S]*?)<\/xsd:simpleType>/g;
-  const valueRegex = /<xsd:enumeration\s+value="([^"]+)"/g;
+  const typeRegex = /<xsd:simpleType\b([^>]*)>([\s\S]*?)<\/xsd:simpleType\s*>/g;
+  const typeStarts = content.match(/<xsd:simpleType\b/g)?.length ?? 0;
+  const typeEnds = content.match(/<\/xsd:simpleType\s*>/g)?.length ?? 0;
+  const typeMatches = [...content.matchAll(typeRegex)];
+  if (typeStarts !== typeEnds || typeMatches.length !== typeStarts) {
+    throw new Error(`Malformed simpleType structure in ${enumsXsdPath}`);
+  }
 
-  for (const typeMatch of content.matchAll(typeRegex)) {
-    const typeName = typeMatch[1];
+  for (const typeMatch of typeMatches) {
+    const attributes = typeMatch[1];
     const typeBody = typeMatch[2];
+    const typeName = attributes?.match(/\bname="([^"]+)"/)?.[1];
     if (!typeName || typeBody === undefined) throw new Error(`Malformed enum in ${enumsXsdPath}`);
-    const values = [...typeBody.matchAll(valueRegex)].flatMap(match =>
-      match[1] === undefined ? [] : [decodeXmlEntities(match[1])]
-    );
-    if (values.length > 0) enums.set(typeName, values);
+    if (enums.has(typeName)) throw new Error(`Duplicate enum type ${typeName} in ${enumsXsdPath}`);
+
+    const valueStarts = typeBody.match(/<xsd:enumeration\b/g)?.length ?? 0;
+    const valueMatches = [...typeBody.matchAll(/<xsd:enumeration\b([^>]*)\/?>/g)];
+    if (valueStarts === 0) throw new Error(`Enum type ${typeName} has no enumeration values`);
+    if (valueMatches.length !== valueStarts) {
+      throw new Error(`Malformed enumeration structure in ${typeName}`);
+    }
+    const values = valueMatches.map(match => {
+      const value = match[1]?.match(/\bvalue="([^"]*)"/)?.[1];
+      if (value === undefined) throw new Error(`Enumeration without a value in ${typeName}`);
+      return decodeXmlEntities(value);
+    });
+    enums.set(typeName, values);
   }
 
   return stableRecord(enums.entries());
@@ -274,7 +319,7 @@ function buildSchemaRegistry(wsdl: any): SchemaRegistry {
   const elements = new Map<string, any>();
   const schemas = wsdl?.definitions?.schemas ?? {};
 
-  for (const namespace of Object.keys(schemas).sort()) {
+  for (const namespace of Object.keys(schemas).sort(compareCodePoints)) {
     const schema = schemas[namespace];
     for (const [name, value] of Object.entries(schema?.complexTypes ?? {})) {
       if (!complexTypes.has(name)) complexTypes.set(name, value);
@@ -309,7 +354,7 @@ function extractOperationNames(wsdl: any): string[] {
   const binding =
     (bindingName && definitions?.bindings?.[bindingName]) ||
     (typeof bindingRef === 'string' && definitions?.bindings?.[bindingRef]);
-  return Object.keys(binding?.operations ?? {}).sort();
+  return Object.keys(binding?.operations ?? {}).sort(compareCodePoints);
 }
 
 function discoverOperations(operations: string[]): {
@@ -826,12 +871,38 @@ async function buildVersion(version: string): Promise<VersionArtifacts> {
   };
 }
 
+function versionSymbolSuffix(version: string): string {
+  return version.replace(/[^\dA-Za-z]+/g, '_');
+}
+
+function versionFileSlug(version: string): string {
+  return version.replace(/[^\dA-Za-z]+/g, '-');
+}
+
+function renderVersionMap(versions: string[], symbolPrefix: string): string {
+  return `{
+${versions
+  .map(version => `  ${JSON.stringify(version)}: ${symbolPrefix}_${versionSymbolSuffix(version)},`)
+  .join('\n')}
+}`;
+}
+
+function renderVersionImports(versions: string[], symbolPrefixes: string[]): string {
+  return versions
+    .map(version => {
+      const suffix = versionSymbolSuffix(version);
+      const symbols = symbolPrefixes.map(prefix => `${prefix}_${suffix}`).join(', ');
+      return `import { ${symbols} } from './versions/axl-version-${versionFileSlug(version)}';`;
+    })
+    .join('\n');
+}
+
 async function main(): Promise<void> {
   const entries = await fs.readdir(SCHEMA_DIR, { withFileTypes: true });
   const versions = entries
     .filter(entry => entry.isDirectory())
     .map(entry => entry.name)
-    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+    .sort(compareVersions);
   const latestVersion = versions.at(-1);
   if (!latestVersion) throw new Error('No WSDL versions found under schema/');
 
@@ -850,25 +921,6 @@ async function main(): Promise<void> {
   const topLevelObjectsByVersion = stableRecord(
     versions.map(version => [version, artifactsByVersion[version]!.objects] as const)
   );
-  const objectOperationsByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.objectOperations] as const)
-  );
-  const actionOperationsByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.actionOperations] as const)
-  );
-  const metadataByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.operationMetadata] as const)
-  );
-  const schemasByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.operationSchemas] as const)
-  );
-  const enumsByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.largeEnums] as const)
-  );
-  const schemaDigestsByVersion = stableRecord(
-    versions.map(version => [version, artifactsByVersion[version]!.operationSchemaDigest] as const)
-  );
-
   const coreObjects = latest.objects.filter(object =>
     CRUD_VERBS.every(verb => verb in latest.objectOperations[object]!)
   );
@@ -922,51 +974,19 @@ export const UNIVERSAL_AXL_OBJECTS = ${JSON.stringify(UNIVERSAL_OBJECTS)} as con
 export const VERSION_SUPPORT_MATRIX = ${JSON.stringify(matrix, null, 2)} as const;
 `;
 
-  const axlObjectsFile = `/* eslint-disable */
+  const generatedTypesFile = `/* eslint-disable */
 // AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
-// Latest source WSDL version: ${latestVersion}
 
 import type { WsdlVersion } from './wsdl-support';
-
-export const AXL_OBJECTS_SOURCE_WSDL_VERSION = ${JSON.stringify(latestVersion)} as const;
-
-export const AXL_TOP_LEVEL_OBJECTS_BY_VERSION = ${JSON.stringify(topLevelObjectsByVersion, null, 2)} as const;
-export const AXL_TOP_LEVEL_OBJECTS = AXL_TOP_LEVEL_OBJECTS_BY_VERSION[AXL_OBJECTS_SOURCE_WSDL_VERSION];
-export type AxlTopLevelObject = (typeof AXL_TOP_LEVEL_OBJECTS)[number];
 
 export type CrudVerb = 'add' | 'get' | 'list' | 'update' | 'remove';
 export type ActionVerbPrefix = 'apply' | 'do' | 'reset' | 'restart' | 'lock' | 'wipe' | 'assign' | 'unassign';
-
-/** CRUD and object-bound action discovery for each WSDL version. */
-export const AXL_OBJECT_OPERATIONS_BY_VERSION: Record<WsdlVersion, Record<string, Record<string, string>>> = ${JSON.stringify(objectOperationsByVersion, null, 2)};
-export const AXL_OBJECT_OPERATIONS = AXL_OBJECT_OPERATIONS_BY_VERSION[AXL_OBJECTS_SOURCE_WSDL_VERSION];
-
-/** Non-CRUD action discovery for each WSDL version. */
-export const AXL_ACTION_OPERATIONS_BY_VERSION: Record<WsdlVersion, Record<string, { verb: ActionVerbPrefix; object: string | null }>> = ${JSON.stringify(actionOperationsByVersion, null, 2)};
-export const AXL_ACTION_OPERATIONS = AXL_ACTION_OPERATIONS_BY_VERSION[AXL_OBJECTS_SOURCE_WSDL_VERSION];
-`;
-
-  const objectsJson = JSON.stringify(
-    {
-      version: latestVersion,
-      objects: latest.objects,
-      objectsByVersion: topLevelObjectsByVersion,
-      sourceDigestsByVersion,
-    },
-    null,
-    2
-  );
-
-  const operationSchemasFile = `/* eslint-disable */
-// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
-// Latest source WSDL version: ${latestVersion}
-// ${Object.values(schemasByVersion).reduce((sum, value) => sum + Object.keys(value).length, 0)} operation schemas across ${versions.length} versions
-
-import type { WsdlVersion } from './wsdl-support';
-
-export const AXL_SCHEMAS_SOURCE_VERSION = ${JSON.stringify(latestVersion)} as const;
-
 export type Occurs = number | 'unbounded';
+
+export interface ActionOperationInfo {
+  verb: ActionVerbPrefix;
+  object: string | null;
+}
 
 export interface ChoiceSchema {
   minOccurs: number;
@@ -1023,30 +1043,191 @@ export interface OperationSchema extends OperationMetadata {
   attributes: Record<string, AttributeSchema>;
 }
 
-export const AXL_ENUMS_BY_VERSION: Record<WsdlVersion, Record<string, string[]>> = ${JSON.stringify(enumsByVersion, null, 2)};
-export const AXL_ENUMS = AXL_ENUMS_BY_VERSION[AXL_SCHEMAS_SOURCE_VERSION];
-
-export const AXL_OPERATION_METADATA_BY_VERSION: Record<WsdlVersion, Record<string, OperationMetadata>> = ${JSON.stringify(metadataByVersion, null, 2)};
-
-export const AXL_OPERATION_SCHEMA_DIGESTS_BY_VERSION: Record<WsdlVersion, string> = ${JSON.stringify(schemaDigestsByVersion, null, 2)};
-
-export const AXL_OPERATION_SCHEMAS_BY_VERSION: Record<WsdlVersion, Record<string, OperationSchema>> = ${JSON.stringify(schemasByVersion, null, 2)};
-
-/** Latest-version alias retained for the existing MCP discovery surface. */
-export const AXL_OPERATION_SCHEMAS = AXL_OPERATION_SCHEMAS_BY_VERSION[AXL_SCHEMAS_SOURCE_VERSION];
+export interface AxlVersionArtifacts {
+  version: WsdlVersion;
+  topLevelObjects: readonly string[];
+  objectOperations: Record<string, Record<string, string>>;
+  actionOperations: Record<string, ActionOperationInfo>;
+  enums: Record<string, string[]>;
+  operationMetadata: Record<string, OperationMetadata>;
+  operationSchemaDigest: string;
+  operationSchemas: Record<string, OperationSchema>;
+}
 `;
 
+  const objectImports = renderVersionImports(versions, [
+    'AXL_TOP_LEVEL_OBJECTS',
+    'AXL_OBJECT_OPERATIONS',
+    'AXL_ACTION_OPERATIONS',
+  ]);
+  const axlObjectsFile = `/* eslint-disable */
+// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
+// Latest source WSDL version: ${latestVersion}
+
+import type { ActionOperationInfo } from './axl-generated-types';
+import type { WsdlVersion } from './wsdl-support';
+${objectImports}
+
+export type { ActionVerbPrefix, CrudVerb } from './axl-generated-types';
+
+export const AXL_OBJECTS_SOURCE_WSDL_VERSION = ${JSON.stringify(latestVersion)} as const;
+
+export const AXL_TOP_LEVEL_OBJECTS_BY_VERSION = ${renderVersionMap(versions, 'AXL_TOP_LEVEL_OBJECTS')} as const;
+export const AXL_TOP_LEVEL_OBJECTS = AXL_TOP_LEVEL_OBJECTS_${versionSymbolSuffix(latestVersion)};
+export type AxlTopLevelObject = (typeof AXL_TOP_LEVEL_OBJECTS)[number];
+
+/** CRUD and object-bound action discovery for each WSDL version. */
+export const AXL_OBJECT_OPERATIONS_BY_VERSION: Record<WsdlVersion, Record<string, Record<string, string>>> = ${renderVersionMap(versions, 'AXL_OBJECT_OPERATIONS')};
+export const AXL_OBJECT_OPERATIONS = AXL_OBJECT_OPERATIONS_${versionSymbolSuffix(latestVersion)};
+
+/** Non-CRUD action discovery for each WSDL version. */
+export const AXL_ACTION_OPERATIONS_BY_VERSION: Record<WsdlVersion, Record<string, ActionOperationInfo>> = ${renderVersionMap(versions, 'AXL_ACTION_OPERATIONS')};
+export const AXL_ACTION_OPERATIONS = AXL_ACTION_OPERATIONS_${versionSymbolSuffix(latestVersion)};
+`;
+
+  const objectsJson = JSON.stringify(
+    {
+      version: latestVersion,
+      objects: latest.objects,
+      objectsByVersion: topLevelObjectsByVersion,
+      sourceDigestsByVersion,
+    },
+    null,
+    2
+  );
+
+  const schemaImports = renderVersionImports(versions, [
+    'AXL_ENUMS',
+    'AXL_OPERATION_METADATA',
+    'AXL_OPERATION_SCHEMA_DIGEST',
+    'AXL_OPERATION_SCHEMAS',
+  ]);
+  const operationSchemasFile = `/* eslint-disable */
+// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
+// Latest source WSDL version: ${latestVersion}
+// ${versions.reduce((sum, version) => sum + artifactsByVersion[version]!.operations.length, 0)} operation schemas across ${versions.length} versions
+
+import type { WsdlVersion } from './wsdl-support';
+import type { OperationMetadata, OperationSchema } from './axl-generated-types';
+${schemaImports}
+
+export type { AttributeSchema, ChoiceSchema, FieldSchema, Occurs, OperationMetadata, OperationSchema, SequenceSchema } from './axl-generated-types';
+
+export const AXL_SCHEMAS_SOURCE_VERSION = ${JSON.stringify(latestVersion)} as const;
+
+export const AXL_ENUMS_BY_VERSION: Record<WsdlVersion, Record<string, string[]>> = ${renderVersionMap(versions, 'AXL_ENUMS')};
+export const AXL_ENUMS = AXL_ENUMS_${versionSymbolSuffix(latestVersion)};
+
+export const AXL_OPERATION_METADATA_BY_VERSION: Record<WsdlVersion, Record<string, OperationMetadata>> = ${renderVersionMap(versions, 'AXL_OPERATION_METADATA')};
+
+export const AXL_OPERATION_SCHEMA_DIGESTS_BY_VERSION: Record<WsdlVersion, string> = ${renderVersionMap(versions, 'AXL_OPERATION_SCHEMA_DIGEST')};
+
+export const AXL_OPERATION_SCHEMAS_BY_VERSION: Record<WsdlVersion, Record<string, OperationSchema>> = ${renderVersionMap(versions, 'AXL_OPERATION_SCHEMAS')};
+
+/** Latest-version alias retained for the existing MCP discovery surface. */
+export const AXL_OPERATION_SCHEMAS = AXL_OPERATION_SCHEMAS_${versionSymbolSuffix(latestVersion)};
+`;
+
+  const latestSuffix = versionSymbolSuffix(latestVersion);
+  const latestFile = `/* eslint-disable */
+// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
+// Runtime-only latest-version exports for the existing MCP surface.
+
+import {
+  AXL_ACTION_OPERATIONS_${latestSuffix},
+  AXL_ENUMS_${latestSuffix},
+  AXL_OBJECT_OPERATIONS_${latestSuffix},
+  AXL_OPERATION_METADATA_${latestSuffix},
+  AXL_OPERATION_SCHEMAS_${latestSuffix},
+  AXL_TOP_LEVEL_OBJECTS_${latestSuffix},
+} from './versions/axl-version-${versionFileSlug(latestVersion)}';
+
+export type { ActionVerbPrefix, AttributeSchema, ChoiceSchema, CrudVerb, FieldSchema, Occurs, OperationMetadata, OperationSchema, SequenceSchema } from './axl-generated-types';
+
+export const AXL_OBJECTS_SOURCE_WSDL_VERSION = ${JSON.stringify(latestVersion)} as const;
+export const AXL_SCHEMAS_SOURCE_VERSION = ${JSON.stringify(latestVersion)} as const;
+export const AXL_TOP_LEVEL_OBJECTS = AXL_TOP_LEVEL_OBJECTS_${latestSuffix};
+export type AxlTopLevelObject = (typeof AXL_TOP_LEVEL_OBJECTS)[number];
+export const AXL_OBJECT_OPERATIONS = AXL_OBJECT_OPERATIONS_${latestSuffix};
+export const AXL_ACTION_OPERATIONS = AXL_ACTION_OPERATIONS_${latestSuffix};
+export const AXL_ENUMS = AXL_ENUMS_${latestSuffix};
+export const AXL_OPERATION_METADATA = AXL_OPERATION_METADATA_${latestSuffix};
+export const AXL_OPERATION_SCHEMAS = AXL_OPERATION_SCHEMAS_${latestSuffix};
+`;
+
+  const loaderFile = `/* eslint-disable */
+// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
+
+import type { AxlVersionArtifacts } from './axl-generated-types';
+import type { WsdlVersion } from './wsdl-support';
+
+export const AXL_VERSION_LOADERS: Record<WsdlVersion, () => Promise<AxlVersionArtifacts>> = {
+${versions
+  .map(
+    version =>
+      `  ${JSON.stringify(version)}: () => import('./versions/axl-version-${versionFileSlug(version)}').then(module => module.AXL_VERSION_ARTIFACTS),`
+  )
+  .join('\n')}
+};
+
+export function loadAxlVersionArtifacts(version: WsdlVersion): Promise<AxlVersionArtifacts> {
+  return AXL_VERSION_LOADERS[version]();
+}
+`;
+
+  const versionFiles = versions.map(version => {
+    const artifact = artifactsByVersion[version];
+    if (!artifact) throw new Error(`Missing generated artifacts for ${version}`);
+    const suffix = versionSymbolSuffix(version);
+    const file = `/* eslint-disable */
+// AUTO-GENERATED by scripts/generate-types.ts. Do not edit by hand.
+// Source WSDL version: ${version}
+
+import type { ActionOperationInfo, AxlVersionArtifacts, OperationMetadata, OperationSchema } from '../axl-generated-types';
+
+export const AXL_VERSION_${suffix} = ${JSON.stringify(version)} as const;
+export const AXL_TOP_LEVEL_OBJECTS_${suffix} = ${JSON.stringify(artifact.objects)} as const;
+export const AXL_OBJECT_OPERATIONS_${suffix}: Record<string, Record<string, string>> = ${JSON.stringify(artifact.objectOperations, null, 2)};
+export const AXL_ACTION_OPERATIONS_${suffix}: Record<string, ActionOperationInfo> = ${JSON.stringify(artifact.actionOperations, null, 2)};
+export const AXL_ENUMS_${suffix}: Record<string, string[]> = ${JSON.stringify(artifact.largeEnums, null, 2)};
+export const AXL_OPERATION_METADATA_${suffix}: Record<string, OperationMetadata> = ${JSON.stringify(artifact.operationMetadata, null, 2)};
+export const AXL_OPERATION_SCHEMA_DIGEST_${suffix} = ${JSON.stringify(artifact.operationSchemaDigest)};
+export const AXL_OPERATION_SCHEMAS_${suffix}: Record<string, OperationSchema> = ${JSON.stringify(artifact.operationSchemas, null, 2)};
+
+export const AXL_VERSION_ARTIFACTS: AxlVersionArtifacts = {
+  version: AXL_VERSION_${suffix},
+  topLevelObjects: AXL_TOP_LEVEL_OBJECTS_${suffix},
+  objectOperations: AXL_OBJECT_OPERATIONS_${suffix},
+  actionOperations: AXL_ACTION_OPERATIONS_${suffix},
+  enums: AXL_ENUMS_${suffix},
+  operationMetadata: AXL_OPERATION_METADATA_${suffix},
+  operationSchemaDigest: AXL_OPERATION_SCHEMA_DIGEST_${suffix},
+  operationSchemas: AXL_OPERATION_SCHEMAS_${suffix},
+};
+`;
+    return {
+      path: path.join(OUT_VERSIONS_DIR, `axl-version-${versionFileSlug(version)}.ts`),
+      file,
+    };
+  });
+
+  await fs.rm(OUT_VERSIONS_DIR, { recursive: true, force: true });
   await Promise.all([
     fs.mkdir(path.dirname(OUT_WSDL_SUPPORT), { recursive: true }),
     fs.mkdir(path.dirname(OUT_AXL_OBJECTS), { recursive: true }),
     fs.mkdir(path.dirname(OUT_OBJECTS_JSON), { recursive: true }),
     fs.mkdir(path.dirname(OUT_OPERATION_SCHEMAS), { recursive: true }),
+    fs.mkdir(OUT_VERSIONS_DIR, { recursive: true }),
   ]);
   await Promise.all([
     fs.writeFile(OUT_WSDL_SUPPORT, wsdlSupportFile, 'utf8'),
+    fs.writeFile(OUT_GENERATED_TYPES, generatedTypesFile, 'utf8'),
+    fs.writeFile(OUT_LATEST, latestFile, 'utf8'),
     fs.writeFile(OUT_AXL_OBJECTS, axlObjectsFile, 'utf8'),
     fs.writeFile(OUT_OBJECTS_JSON, `${objectsJson}\n`, 'utf8'),
     fs.writeFile(OUT_OPERATION_SCHEMAS, operationSchemasFile, 'utf8'),
+    fs.writeFile(OUT_VERSION_LOADER, loaderFile, 'utf8'),
+    ...versionFiles.map(({ path: outputPath, file }) => fs.writeFile(outputPath, file, 'utf8')),
   ]);
 
   for (const version of versions) {

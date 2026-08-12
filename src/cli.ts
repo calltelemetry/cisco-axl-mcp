@@ -1,6 +1,6 @@
 import { readFile as defaultReadFile } from 'node:fs/promises';
-import { parseCliCommand, type CliCommand } from './cli/command';
-import { readBoundedStream, readJsonPayload, readSqlPayload } from './cli/input';
+import { formatDiagnosticToken, parseCliCommand, type CliCommand } from './cli/command';
+import { readCliStdin, readJsonPayload, readSqlPayload, type ReadStdinOptions } from './cli/input';
 import { CliError, successEnvelope, toCliFailure, type CliExitCode } from './cli/output';
 import { validateOperationInput } from './cli/schema-validation';
 import {
@@ -24,7 +24,7 @@ export interface CliDependencies {
   env?: NodeJS.ProcessEnv;
   stdout?: CliWritable;
   stderr?: CliWritable;
-  readStdin?: () => Promise<string | Buffer>;
+  readStdin?: (options?: ReadStdinOptions) => Promise<string | Buffer>;
   readFile?: (path: string) => Promise<string | Buffer>;
   runAxl?: (options: RunAxlOptions, dependencies?: RunAxlDependencies) => Promise<unknown>;
   now?: () => number;
@@ -32,18 +32,21 @@ export interface CliDependencies {
   runnerDependencies?: RunAxlDependencies;
 }
 
-async function readProcessStdin(): Promise<Buffer> {
+async function readProcessStdin(options: ReadStdinOptions = {}): Promise<Buffer> {
   if (process.stdin.isTTY) return Buffer.alloc(0);
-  return readBoundedStream(process.stdin);
+  return readCliStdin(process.stdin, options);
 }
 
 function selectedVersion(command: CliCommand, env: NodeJS.ProcessEnv): WsdlVersion {
   const version = 'version' in command ? (command.version ?? env.CUCM_VERSION) : env.CUCM_VERSION;
   if (!version) throw new CliError('CLI_VERSION_REQUIRED', 'A CUCM version is required', 2);
   if (!isSupportedCucmVersion(version)) {
-    throw new CliError('CLI_UNSUPPORTED_VERSION', `CUCM version "${version}" is not supported`, 3, {
-      supported_versions: WSDL_VERSIONS,
-    });
+    throw new CliError(
+      'CLI_UNSUPPORTED_VERSION',
+      `CUCM version ${formatDiagnosticToken(version)} is not supported`,
+      3,
+      { supported_versions: WSDL_VERSIONS }
+    );
   }
   return version;
 }
@@ -61,7 +64,7 @@ function operationSchema(artifacts: AxlVersionArtifacts, operation: string) {
   if (!metadata || !schema) {
     throw new CliError(
       'CLI_UNSUPPORTED_OPERATION',
-      `Operation "${operation}" is not available for CUCM ${artifacts.version}`,
+      `Operation ${formatDiagnosticToken(operation)} is not available for CUCM ${formatDiagnosticToken(artifacts.version)}`,
       3,
       { operation, cucm_version: artifacts.version }
     );
@@ -102,7 +105,7 @@ function requireMutationConfirmation(
   if (command.confirm !== confirmation) {
     throw new CliError(
       'CLI_MUTATION_CONFIRMATION_INVALID',
-      `Mutating operation confirmation must exactly match "${confirmation}"`,
+      `Mutating operation confirmation must exactly match ${formatDiagnosticToken(confirmation)}`,
       5
     );
   }
@@ -139,7 +142,7 @@ async function executeOperation(options: {
   ) {
     throw new CliError(
       'CLI_AUTOPAGE_INVALID',
-      `Auto-pagination is only available for list operations, got "${options.operation}"`,
+      `Auto-pagination is only available for list operations, got ${formatDiagnosticToken(options.operation)}`,
       2
     );
   }
@@ -223,7 +226,7 @@ export async function runCli(
           if (!objectOperations) {
             throw new CliError(
               'CLI_UNSUPPORTED_OBJECT',
-              `Object "${command.object}" is not available for CUCM ${artifacts.version}`,
+              `Object ${formatDiagnosticToken(command.object)} is not available for CUCM ${formatDiagnosticToken(artifacts.version)}`,
               3,
               { object: command.object, cucm_version: artifacts.version }
             );

@@ -113,7 +113,7 @@ function buildFieldSchema(field: FieldSchema, enums: Record<string, string[]>): 
           : z.record(z.string(), z.unknown());
         break;
       case 'opaque':
-        schema = z.unknown();
+        schema = z.unknown().refine(value => value !== null, 'Expected a non-null opaque value');
         break;
       default:
         schema = z.unknown();

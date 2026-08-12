@@ -106,6 +106,79 @@ describe('schema-driven CLI discovery', () => {
 });
 
 describe('operation payload validation', () => {
+  it('rejects null for non-nillable opaque fields while accepting opaque JSON values', () => {
+    const schema: OperationSchema = {
+      verb: 'update',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        opaque: {
+          type: 'opaque',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: false,
+          opaque: true,
+        },
+      },
+      choices: [],
+      sequences: [],
+      attributes: {},
+    };
+
+    expect(() => validateOperationInput(schema, {}, { opaque: null })).toThrowError(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({ path: 'opaque', kind: 'type', expected: 'opaque' }),
+        ]),
+      })
+    );
+    expect(validateOperationInput(schema, {}, { opaque: { vendor: true } })).toEqual({
+      opaque: { vendor: true },
+    });
+    expect(validateOperationInput(schema, {}, { opaque: '<vendor />' })).toEqual({
+      opaque: '<vendor />',
+    });
+    expect(validateOperationInput(schema, {}, { opaque: 42 })).toEqual({ opaque: 42 });
+  });
+
+  it('accepts null only for nillable synthetic and generated opaque fields', async () => {
+    const nillableSchema: OperationSchema = {
+      verb: 'update',
+      object: 'Synthetic',
+      kind: 'crud',
+      fields: {
+        opaque: {
+          type: 'opaque',
+          minOccurs: 0,
+          maxOccurs: 1,
+          nillable: true,
+          opaque: true,
+        },
+      },
+      choices: [],
+      sequences: [],
+      attributes: {},
+    };
+    expect(validateOperationInput(nillableSchema, {}, { opaque: null })).toEqual({
+      opaque: null,
+    });
+
+    const version15 = await loadAxlVersionArtifacts('15.0');
+    expect(() =>
+      validateOperationInput(version15.operationSchemas.updatePhone!, version15.enums, {
+        name: 'SEP001',
+        vendorConfig: null,
+      })
+    ).toThrowError(expect.objectContaining({ code: 'CLI_SCHEMA_INVALID' }));
+
+    const version11 = await loadAxlVersionArtifacts('11.0');
+    expect(
+      validateOperationInput(version11.operationSchemas.addAppServerInfo!, version11.enums, {
+        appServerInfo: { content: null },
+      })
+    ).toEqual({ appServerInfo: { content: null } });
+  }, 15_000);
+
   it('reports each missing required enum or array exactly once as required', () => {
     const requiredSchema: OperationSchema = {
       verb: 'add',
@@ -210,6 +283,49 @@ describe('operation payload validation', () => {
 });
 
 describe('CLI execution', () => {
+  it.each([
+    {
+      label: 'split password flag',
+      argv: ['execute', 'getPhone', '--password', 'ALPHA BETA-UNIQUE-731'],
+      secrets: ['ALPHA', 'BETA-UNIQUE-731'],
+    },
+    {
+      label: 'equals password flag',
+      argv: ['execute', 'getPhone', '--password=ALPHA BETA-UNIQUE-731'],
+      secrets: ['ALPHA', 'BETA-UNIQUE-731'],
+    },
+    {
+      label: 'unknown value-bearing option',
+      argv: ['execute', 'getPhone', '--mystery=GAMMA SECRET-SUFFIX-884'],
+      secrets: ['GAMMA', 'SECRET-SUFFIX-884'],
+    },
+  ])('rejects $label without echoing attached or following values', async ({ argv, secrets }) => {
+    const cli = harness({ env: {} });
+
+    expect(await runCli(argv, cli.dependencies)).toBe(2);
+    expect(cli.envelope()).toMatchObject({
+      ok: false,
+      error: { code: 'CLI_USAGE', message: 'Sensitive or value-bearing options are not accepted' },
+    });
+    for (const secret of secrets) {
+      expect(cli.stdout()).not.toContain(secret);
+      expect(cli.stderr()).not.toContain(secret);
+    }
+  });
+
+  it('escapes control characters in unknown option diagnostics without injecting output lines', async () => {
+    const cli = harness({ env: {} });
+    const token = '--unknown\r\nFORGED\tEFFECT\u0085\u009b\u2028\u2029';
+
+    expect(await runCli(['execute', 'getPhone', token], cli.dependencies)).toBe(2);
+    for (const control of ['\r', '\t', '\u0085', '\u009b', '\u2028', '\u2029']) {
+      expect(cli.stdout()).not.toContain(control);
+      expect(cli.stderr()).not.toContain(control);
+    }
+    expect(cli.stdout().trim().split('\n')).toHaveLength(1);
+    expect(cli.stderr().trimEnd().split('\n')).toHaveLength(1);
+  });
+
   it('validates and dispatches a read through strict runAxl', async () => {
     const cli = harness();
 

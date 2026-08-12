@@ -3,6 +3,7 @@ import { parseCliCommand } from '../src/cli/command';
 import {
   CLI_MAX_PAYLOAD_BYTES,
   readBoundedStream,
+  readCliStdin,
   readJsonPayload,
   readSqlPayload,
 } from '../src/cli/input';
@@ -185,6 +186,34 @@ describe('readBoundedStream', () => {
       exitCode: 2,
     });
     expect(yielded).toBe(2);
+  });
+
+  it('reports explicit-input conflict before size for real streamed non-whitespace stdin', async () => {
+    let yielded = 0;
+    async function* chunks() {
+      yielded++;
+      yield Buffer.from('x');
+      yielded++;
+      yield Buffer.alloc(CLI_MAX_PAYLOAD_BYTES + 1);
+    }
+
+    await expect(readCliStdin(chunks(), { explicitInput: true })).rejects.toMatchObject({
+      code: 'CLI_INPUT_CONFLICT',
+      exitCode: 2,
+    });
+    expect(yielded).toBe(1);
+  });
+
+  it('bounds whitespace-only streamed stdin even when explicit input is present', async () => {
+    async function* chunks() {
+      yield Buffer.alloc(CLI_MAX_PAYLOAD_BYTES, 0x20);
+      yield Buffer.from(' ');
+    }
+
+    await expect(readCliStdin(chunks(), { explicitInput: true })).rejects.toMatchObject({
+      code: 'CLI_PAYLOAD_TOO_LARGE',
+      exitCode: 2,
+    });
   });
 });
 

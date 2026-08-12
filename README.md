@@ -148,7 +148,7 @@ When set, only the specified object types and their CRUD + action operations are
 | `AXL_MCP_RETRY_BASE_DELAY_MS` | `1000` | Initial backoff delay in milliseconds |
 | `AXL_MCP_ENABLE_SQL` | `true` | Enable SQL tools (`false` to disable) |
 | `AXL_MCP_MAX_AUTOPAGINATE` | `10000` | Max rows returned by `autoPage` |
-| `AXL_MCP_AUDIT_LOG` | `request` | Audit log detail level (see below) |
+| `AXL_MCP_AUDIT_LOG` | `metadata` | Audit log detail level (see below); unknown values fail closed to metadata |
 | `AXL_MCP_AUDIT_MAX_SIZE_MB` | `10` | Audit log rotation threshold per host |
 
 ### Audit Log
@@ -158,8 +158,8 @@ Every AXL call is logged per-host to `~/.cisco-axl-mcp/audit/<host>.jsonl`. The 
 | Level | Request Payload | Response Payload | Description |
 |-------|:-:|:-:|-------------|
 | `off` | | | No audit logging |
-| `metadata` | | | Operation, status, duration, rows only |
-| `request` (default) | **yes** | | Metadata + request payload with credentials redacted |
+| `metadata` (default) | | | Operation, status, duration, rows only; also used for unknown or empty values |
+| `request` | **yes** | | Metadata + request payload with credentials redacted |
 | `full` | **yes** | **yes** | Metadata + request + full response payload |
 
 Credentials (`cucm_password`, `cucm_username`, `cucm_host`, `password`, `username`, `host`) are automatically redacted from request payloads at all log levels.

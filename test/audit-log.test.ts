@@ -570,6 +570,36 @@ describe('getAuditLogLevel', () => {
     expect(getAuditLogLevel()).toBe('metadata');
   });
 
+  it.each(['request', 'req', 'true', '1'])(
+    'returns request for explicit value or legacy alias %s',
+    value => {
+      process.env.AXL_MCP_AUDIT_LOG = value;
+      expect(getAuditLogLevel()).toBe('request');
+    }
+  );
+
+  it.each(['', '   ', 'typo', 'verbose', 'payload'])(
+    'fails closed to metadata for invalid value %j',
+    value => {
+      process.env.AXL_MCP_AUDIT_LOG = value;
+      expect(getAuditLogLevel()).toBe('metadata');
+    }
+  );
+
+  it('does not persist request payload for an invalid configured audit level', () => {
+    process.env.AXL_MCP_AUDIT_LOG = 'typo';
+
+    recordOperation('host', 'getPhone', Date.now(), {
+      ok: true,
+      request: { name: 'SEP111', password: 'must-not-be-logged' },
+    });
+
+    const persisted = JSON.stringify(readLogLines('host')[0]);
+    expect(persisted).not.toContain('SEP111');
+    expect(persisted).not.toContain('must-not-be-logged');
+    expect(readLogLines('host')[0]!.request).toBeUndefined();
+  });
+
   it('returns full', () => {
     process.env.AXL_MCP_AUDIT_LOG = 'full';
     expect(getAuditLogLevel()).toBe('full');

@@ -81,7 +81,14 @@ export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: Tl
   const passwordIdentity = createHmac('sha256', cacheIdentityKey)
     .update(creds.password)
     .digest('hex');
-  return `${creds.host}::${creds.username}::${creds.version}::${tlsMode}::${passwordIdentity}`;
+  const identityTuple = JSON.stringify([
+    creds.host,
+    creds.username,
+    creds.version,
+    passwordIdentity,
+    tlsMode,
+  ]);
+  return createHmac('sha256', cacheIdentityKey).update(identityTuple).digest('hex');
 }
 
 function applyExplicitTls(service: CiscoAxlInternals, tlsMode: TlsMode): void {

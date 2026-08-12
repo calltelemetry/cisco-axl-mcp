@@ -29,8 +29,9 @@ export function getAuditLogLevel(): AuditLogLevel {
   const val = (process.env.AXL_MCP_AUDIT_LOG ?? 'metadata').toLowerCase().trim();
   if (val === 'off' || val === 'false' || val === '0' || val === 'none') return 'off';
   if (val === 'metadata' || val === 'meta') return 'metadata';
+  if (val === 'request' || val === 'req' || val === 'true' || val === '1') return 'request';
   if (val === 'full' || val === 'all') return 'full';
-  return 'request';
+  return 'metadata';
 }
 
 function isCredentialKey(key: string): boolean {

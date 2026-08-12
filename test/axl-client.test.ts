@@ -127,6 +127,33 @@ describe('getAxlClient', () => {
     expect(first).not.toBe(changed);
   });
 
+  it('keeps delimiter-ambiguous credential tuples in distinct cache identities and clients', async () => {
+    const { createAxlClientCacheIdentity, getAxlClient } = await import('../src/lib/axl-client');
+    const firstCredentials: CucmCredentials = {
+      host: '2001::1',
+      username: 'admin',
+      password: 'shared-password',
+      version: '14.0',
+    };
+    const secondCredentials: CucmCredentials = {
+      host: '2001',
+      username: '1::admin',
+      password: 'shared-password',
+      version: '14.0',
+    };
+
+    const firstIdentity = createAxlClientCacheIdentity(firstCredentials, 'secure');
+    const secondIdentity = createAxlClientCacheIdentity(secondCredentials, 'secure');
+    const firstClient = getAxlClient(firstCredentials, 'secure');
+    const secondClient = getAxlClient(secondCredentials, 'secure');
+
+    expect(firstIdentity).not.toBe(secondIdentity);
+    expect(firstIdentity).not.toContain(firstCredentials.password);
+    expect(secondIdentity).not.toContain(secondCredentials.password);
+    expect(firstClient).not.toBe(secondClient);
+    expect(clientObservations.constructorCalls).toHaveLength(2);
+  });
+
   it.each([
     ['secure', true],
     ['insecure', false],

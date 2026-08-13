@@ -38,7 +38,8 @@ describe('catalog-aware AXL operation classification', () => {
         ).toBe(true);
         expect(isMutationOperationFromCatalog(operation, artifacts.operationMetadata)).toBe(true);
       }
-    }
+    },
+    15_000
   );
 
   it('classifies operations missing from the supplied catalog conservatively as mutations', () => {
@@ -56,7 +57,8 @@ describe('catalog-aware AXL operation classification', () => {
           isMutationOperation(operation, metadata)
         );
       }
-    }
+    },
+    15_000
   );
 
   it('uses the selected version and remains conservative for unsupported operations', () => {

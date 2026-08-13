@@ -273,8 +273,8 @@ describe('AxlAPIService.executeOperation', () => {
   );
 
   it('preserves a structured SOAP business fault for a mutation without inviting a retry', async () => {
-    const fault = Object.assign(new Error('AXL validation failed'), {
-      response: { statusCode: 500 },
+    const fault = Object.assign(new Error('AXL validation failed after upstream status 503'), {
+      response: { statusCode: 503 },
       fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
     });
     mockClient.executeOperation.mockRejectedValue(fault);
@@ -286,7 +286,7 @@ describe('AxlAPIService.executeOperation', () => {
       })
       .catch((error: unknown) => error);
 
-    expect(failure).toMatchObject({ message: 'AXL validation failed' });
+    expect(failure).toMatchObject({ message: 'AXL validation failed after upstream status 503' });
     expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
     expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
   });

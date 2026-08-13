@@ -91,6 +91,15 @@ function getDefaultOptions(): RetryOptions {
   };
 }
 
+function hasTextualSoapFault(text: string): boolean {
+  return (
+    /\bsoap\s*fault\b/.test(text) ||
+    /\bfault(?:code|string)\b/.test(text) ||
+    /<(?:[\w-]+:)?fault\b/.test(text) ||
+    /\bsoap:(?:client|server)\b/.test(text)
+  );
+}
+
 /**
  * Check if an error is retryable.
  *
@@ -103,6 +112,11 @@ export function isRetryable(error: unknown): boolean {
 
   // AXL-specific: memory allocation exceeded (mirrors Elixir axl-api.ex:132-138)
   if (lower.includes('maximum axl memory allocation consumed')) return true;
+
+  // SOAP business faults are application responses, even when their text or transport wrapper
+  // contains a normally retryable HTTP status. The memory-allocation exception above is the only
+  // retryable SOAP fault supported by policy.
+  if (signals.hasSoapFault || hasTextualSoapFault(lower)) return false;
 
   // HTTP status-based
   if (
@@ -124,7 +138,6 @@ export function isRetryable(error: unknown): boolean {
   if (signals.statuses.includes(403) || lower.includes('403') || lower.includes('forbidden'))
     return false;
   if (lower.includes('authentication failed')) return false;
-  if (signals.hasSoapFault) return false;
 
   // Connection errors
   if (signals.codes.some(code => NETWORK_ERROR_CODES.has(code))) return true;

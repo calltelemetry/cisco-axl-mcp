@@ -14,6 +14,21 @@ describe('isRetryable', () => {
     expect(isRetryable(new Error('Maximum AXL Memory Allocation Consumed'))).toBe(true);
   });
 
+  it('preserves the AXL memory-allocation retry exception for SOAP faults', () => {
+    const fault = Object.assign(
+      new Error('SOAP fault 503: Maximum AXL Memory Allocation Consumed'),
+      {
+        response: { statusCode: 503 },
+        fault: {
+          faultcode: 'soap:Server',
+          faultstring: 'Maximum AXL Memory Allocation Consumed',
+        },
+      }
+    );
+
+    expect(isRetryable(fault)).toBe(true);
+  });
+
   it('returns true for connection errors', () => {
     expect(isRetryable(new Error('ECONNRESET'))).toBe(true);
     expect(isRetryable(new Error('ECONNREFUSED'))).toBe(true);
@@ -50,6 +65,26 @@ describe('isRetryable', () => {
       fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
     }),
   ])('keeps structured auth and SOAP business faults non-retryable', error => {
+    expect(isRetryable(error)).toBe(false);
+  });
+
+  it.each([
+    ['textual', new Error('SOAP fault 503: Invalid field value')],
+    [
+      'structured 503',
+      Object.assign(new Error('AXL validation failed'), {
+        response: { statusCode: 503 },
+        fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
+      }),
+    ],
+    [
+      'structured 429',
+      Object.assign(new Error('AXL validation failed'), {
+        response: { statusCode: 429 },
+        fault: { faultcode: 'soap:Client', faultstring: 'Invalid field value' },
+      }),
+    ],
+  ])('gives %s SOAP business faults precedence over retryable status text', (_label, error) => {
     expect(isRetryable(error)).toBe(false);
   });
 
@@ -113,6 +148,23 @@ describe('withRetry', () => {
       maxDelayMs: 10,
       jitterFactor: 0,
     });
+    expect(result).toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries an ordinary structured HTTP 503 response', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('request failed'), { statusCode: 503 }))
+      .mockResolvedValue('recovered');
+
+    const result = await withRetry(fn, {
+      maxRetries: 1,
+      baseDelayMs: 1,
+      maxDelayMs: 10,
+      jitterFactor: 0,
+    });
+
     expect(result).toBe('recovered');
     expect(fn).toHaveBeenCalledTimes(2);
   });

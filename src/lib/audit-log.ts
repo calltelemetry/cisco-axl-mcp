@@ -55,6 +55,7 @@ function isCredentialKey(key: string): boolean {
     normalized.endsWith('pwd') ||
     normalized === 'pass' ||
     normalized.includes('passcode') ||
+    normalized === 'pin' ||
     normalized.includes('secret') ||
     normalized.includes('token') ||
     normalized.includes('authorization') ||
@@ -99,6 +100,7 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
     /(<((?:[a-z0-9_-]*:)?[a-z0-9_-]*(?:password|passwd|pwd|passcode|pass|secret|token|authorization|authentication|auth|api[_-]?key|access[_-]?key|secret[_-]?key|username|login|credential|creds)[a-z0-9_-]*)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi,
     '$1***$3'
   );
+  redacted = redacted.replace(/(<((?:[a-z0-9_-]+:)?pin)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, '$1***$3');
   redacted = redactQuotedCredentialValues(redacted);
   redacted = redacted.replace(
     /(\b(?:authorization|authentication|auth)\s*[:=]\s*)[^\r\n]*/gi,
@@ -106,7 +108,7 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   );
   redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
   redacted = redacted.replace(
-    /(\b(?:password|passwd|pwd|passcode|pass|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
+    /(\b(?:password|passwd|pwd|passcode|pass|pin|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
     '$1***'
   );
   return redacted;

@@ -946,6 +946,42 @@ describe('CLI execution', () => {
     expect(cli.stderr()).not.toContain('super-secret');
   });
 
+  it('redacts an AXL PIN from doAuthenticateUser SOAP fault output', async () => {
+    const pin = 'AXL-PIN-CLI-731';
+    const cli = harness({
+      runAxl: async () => {
+        const fault = new Error(
+          `SOAP fault {"pin":"${pin}"} <Fault><pin>${pin}</pin></Fault> ordinary=kept`
+        );
+        Object.assign(fault, { faultDetail: { pin, ordinary: 'structured-kept' } });
+        throw fault;
+      },
+    });
+
+    expect(
+      await runCli(
+        [
+          'execute',
+          'doAuthenticateUser',
+          '--data',
+          JSON.stringify({ userid: 'alice', pin }),
+          '--write',
+          '--confirm',
+          'doAuthenticateUser',
+        ],
+        cli.dependencies
+      )
+    ).toBe(4);
+
+    expect(cli.stdout()).not.toContain(pin);
+    expect(cli.stderr()).not.toContain(pin);
+    expect(cli.stdout()).toContain('ordinary=kept');
+    expect(cli.stderr()).toContain('ordinary=kept');
+    expect(cli.envelope()).toMatchObject({
+      error: { code: 'CLI_AXL_FAILURE', message: expect.stringContaining('ordinary=kept') },
+    });
+  });
+
   it('escapes untrusted transport diagnostics to one line while preserving envelope values', async () => {
     const message = `transport failed for super-secret: ${unsafeDiagnosticControls.join('')} ordinary tail`;
     const cli = harness({

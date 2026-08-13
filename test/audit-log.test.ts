@@ -353,6 +353,30 @@ describe('recordOperation', () => {
     expect(persisted).toContain('***');
   });
 
+  it.each(['request', 'full'] as const)(
+    'redacts AXL PIN values from %s audit entries while preserving ordinary fields',
+    level => {
+      const pin = 'AXL-PIN-AUDIT-731';
+      process.env.AXL_MCP_AUDIT_LOG = level;
+      recordOperation('host', 'doAuthenticateUser', Date.now(), {
+        ok: false,
+        error: `SOAP fault pin=${pin} ordinary=error-kept`,
+        request: { userid: 'alice', pin, ordinary: 'request-kept' },
+        response: {
+          fault: `<Fault><pin>${pin}</pin><ordinary>response-kept</ordinary></Fault>`,
+        },
+      });
+
+      const entry = readLogLines('host')[0]!;
+      const persisted = JSON.stringify(entry);
+      expect(persisted).not.toContain(pin);
+      expect(persisted).toContain('request-kept');
+      expect(persisted).toContain('error-kept');
+      if (level === 'full') expect(persisted).toContain('response-kept');
+      else expect(entry.response).toBeUndefined();
+    }
+  );
+
   it('includes response at full log level', () => {
     process.env.AXL_MCP_AUDIT_LOG = 'full';
     recordOperation('host', 'getPhone', Date.now(), {
@@ -636,6 +660,37 @@ describe('redactCredentials', () => {
     expect(serialized).not.toContain('admin');
     expect(serialized).not.toContain('secret123');
     expect(serialized).not.toContain('response-token');
+    expect(serialized).toContain('***');
+  });
+
+  it('redacts AXL PINs from structured, JSON, XML, fault-text, and explicit-value paths', () => {
+    const secrets = {
+      structured: 'AXL-PIN-STRUCTURED-731',
+      json: 'AXL-PIN-JSON-731',
+      escapedJson: 'AXL-PIN-ESCAPED-731',
+      xml: 'AXL-PIN-XML-731',
+      text: 'AXL-PIN-TEXT-731',
+      explicit: 'AXL-PIN-EXPLICIT-731',
+    };
+    const redacted = redactCredentials(
+      {
+        pin: secrets.structured,
+        ordinary: 'structured-kept',
+        fault:
+          `SOAP fault {"pin":"${secrets.json}"} ` +
+          `{\\"PIN\\":\\"${secrets.escapedJson}\\"} ` +
+          `<Fault><axl:pin>${secrets.xml}</axl:pin><ordinary>xml-kept</ordinary></Fault> ` +
+          `PIN=${secrets.text} ordinary=text-kept ` +
+          `opaque=${secrets.explicit}`,
+      },
+      [secrets.explicit]
+    );
+    const serialized = JSON.stringify(redacted);
+
+    for (const secret of Object.values(secrets)) expect(serialized).not.toContain(secret);
+    for (const ordinary of ['structured-kept', 'xml-kept', 'text-kept']) {
+      expect(serialized).toContain(ordinary);
+    }
     expect(serialized).toContain('***');
   });
 });

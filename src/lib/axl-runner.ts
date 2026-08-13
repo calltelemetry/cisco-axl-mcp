@@ -19,6 +19,7 @@ import {
   type MutationGrantAuthority,
   type MutationGrantReplayStore,
 } from './mutation-grants';
+import { PACKAGE_VERSION } from './package-version';
 
 export type AxlCallerSource = 'mcp' | 'cli' | 'workflow' | 'a2a';
 export type AxlValidationMode = 'compatible' | 'strict';
@@ -47,7 +48,7 @@ export interface RunAxlDependencies {
   now?: () => number;
 }
 
-export const AXL_RUNNER_PACKAGE_VERSION = '0.5.0';
+export const AXL_RUNNER_PACKAGE_VERSION = PACKAGE_VERSION;
 
 export async function runAxl(
   options: RunAxlOptions,

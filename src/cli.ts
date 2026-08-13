@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { readFile as defaultReadFile } from 'node:fs/promises';
 import { formatDiagnosticToken, parseCliCommand, type CliCommand } from './cli/command';
 import { readCliStdin, readJsonPayload, readSqlPayload, type ReadStdinOptions } from './cli/input';
@@ -21,6 +22,7 @@ import { isSupportedCucmVersion } from './lib/version-manager';
 import { loadAxlVersionArtifacts } from './types/generated/axl-version-loader';
 import { WSDL_VERSIONS, type WsdlVersion } from './types/generated/wsdl-support';
 import type { AxlVersionArtifacts } from './types/generated/axl-generated-types';
+import { isDirectExecution } from './lib/entrypoint';
 
 interface CliWritable {
   write(value: string): unknown;
@@ -306,4 +308,10 @@ export async function runCli(
     stderr.write(`${failure.diagnostic}\n`);
     return failure.exitCode;
   }
+}
+
+if (isDirectExecution(import.meta.url)) {
+  void runCli().then(exitCode => {
+    process.exitCode = exitCode;
+  });
 }

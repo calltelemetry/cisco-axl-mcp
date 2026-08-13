@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import CiscoAxlService from 'cisco-axl';
 import { withRetry, isRetryable, isThrottleError } from '../src/lib/retry';
 
 describe('isRetryable', () => {
@@ -24,6 +25,24 @@ describe('isRetryable', () => {
           faultstring: 'Maximum AXL Memory Allocation Consumed',
         },
       }
+    );
+
+    expect(isRetryable(fault)).toBe(true);
+  });
+
+  it.each(['CUCM business limit 429', 'CUCM business state 503'])(
+    'treats real cisco-axl AXLOperationError %s as non-retryable',
+    message => {
+      expect(isRetryable(new CiscoAxlService.AXLOperationError(message, 'updatePhone'))).toBe(
+        false
+      );
+    }
+  );
+
+  it('keeps a real cisco-axl AXL memory-allocation fault retryable', () => {
+    const fault = new CiscoAxlService.AXLOperationError(
+      'Maximum AXL Memory Allocation Consumed',
+      'listPhone'
     );
 
     expect(isRetryable(fault)).toBe(true);
@@ -166,6 +185,32 @@ describe('withRetry', () => {
     });
 
     expect(result).toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['CUCM business limit 429', 'CUCM business state 503'])(
+    'does not retry real cisco-axl AXLOperationError %s',
+    async message => {
+      const fault = new CiscoAxlService.AXLOperationError(message, 'getPhone');
+      const fn = vi.fn().mockRejectedValue(fault);
+
+      await expect(
+        withRetry(fn, { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 })
+      ).rejects.toBe(fault);
+      expect(fn).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('retries a real cisco-axl AXL memory-allocation fault', async () => {
+    const fault = new CiscoAxlService.AXLOperationError(
+      'Maximum AXL Memory Allocation Consumed',
+      'listPhone'
+    );
+    const fn = vi.fn().mockRejectedValueOnce(fault).mockResolvedValue('recovered');
+
+    await expect(
+      withRetry(fn, { maxRetries: 1, baseDelayMs: 1, maxDelayMs: 10, jitterFactor: 0 })
+    ).resolves.toBe('recovered');
     expect(fn).toHaveBeenCalledTimes(2);
   });
 

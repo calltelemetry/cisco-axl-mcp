@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import CiscoAxlService from 'cisco-axl';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -289,6 +290,82 @@ describe('AxlAPIService.executeOperation', () => {
     expect(failure).toMatchObject({ message: 'AXL validation failed after upstream status 503' });
     expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
     expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['CUCM business limit 429', 'CUCM business state 503'])(
+    'preserves real cisco-axl AXLOperationError %s for a mutation',
+    async message => {
+      const fault = new CiscoAxlService.AXLOperationError(message, 'updatePhone');
+      mockClient.executeOperation.mockRejectedValue(fault);
+
+      const failure = await new AxlAPIService()
+        .executeOperation({ ...creds, version: '15.0' }, 'updatePhone', {
+          name: 'SEP111',
+          description: 'new',
+        })
+        .catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ name: 'AXLOperationError', message });
+      expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each(['CUCM business limit 429', 'CUCM business state 503'])(
+    'does not retry real cisco-axl AXLOperationError %s for a read',
+    async message => {
+      const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+      const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      process.env.AXL_MCP_MAX_RETRIES = '1';
+      process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+      mockClient.executeOperation.mockRejectedValue(
+        new CiscoAxlService.AXLOperationError(message, 'getPhone')
+      );
+
+      try {
+        const failure = await new AxlAPIService()
+          .executeOperation({ ...creds, version: '15.0' }, 'getPhone', { name: 'SEP111' })
+          .catch((error: unknown) => error);
+
+        expect(failure).toMatchObject({ name: 'AXLOperationError', message });
+        expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+        expect(mockClient.executeOperation).toHaveBeenCalledTimes(1);
+      } finally {
+        if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+        else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+        if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+        else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      }
+    }
+  );
+
+  it('retries a real cisco-axl memory-allocation fault for a read', async () => {
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '1';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    mockClient.executeOperation.mockRejectedValue(
+      new CiscoAxlService.AXLOperationError('Maximum AXL Memory Allocation Consumed', 'listPhone')
+    );
+
+    try {
+      const failure = await new AxlAPIService()
+        .executeOperation({ ...creds, version: '15.0' }, 'listPhone', {
+          searchCriteria: { name: '%' },
+        })
+        .catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({
+        name: 'AXLOperationError',
+        message: 'Maximum AXL Memory Allocation Consumed',
+      });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+    }
   });
 
   it.each([

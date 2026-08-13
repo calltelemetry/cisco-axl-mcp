@@ -100,6 +100,14 @@ function hasTextualSoapFault(text: string): boolean {
   );
 }
 
+function isAxlOperationError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    readErrorProperty(error, 'name') === 'AXLOperationError'
+  );
+}
+
 /**
  * Check if an error is retryable.
  *
@@ -112,6 +120,9 @@ export function isRetryable(error: unknown): boolean {
 
   // AXL-specific: memory allocation exceeded (mirrors Elixir axl-api.ex:132-138)
   if (lower.includes('maximum axl memory allocation consumed')) return true;
+
+  // cisco-axl manual SOAP faults carry only the exported error type/name, message, and operation.
+  if (isAxlOperationError(error)) return false;
 
   // SOAP business faults are application responses, even when their text or transport wrapper
   // contains a normally retryable HTTP status. The memory-allocation exception above is the only

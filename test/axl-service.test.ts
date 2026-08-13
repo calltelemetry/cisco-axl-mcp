@@ -18,8 +18,9 @@ vi.mock('../src/lib/axl-client', async importOriginal => {
   };
 });
 
-import { AxlAPIService } from '../src/services/axl/index';
+import { AxlAPIService, STRICT_AXL_EXECUTION_POLICY } from '../src/services/axl/index';
 import { runCli } from '../src/cli';
+import { handleTool } from '../src/tools/index';
 const { __mockClient: mockClient, getAxlClient: mockGetAxlClient } =
   (await import('../src/lib/axl-client')) as any;
 
@@ -239,6 +240,48 @@ describe('AxlAPIService.executeOperation', () => {
     }
   });
 
+  it('preserves legacy retry and original error behavior for direct MCP mutations', async () => {
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    const originalEnabledObjects = process.env.AXL_MCP_ENABLED_OBJECTS;
+    const originalConfig = process.env.AXL_MCP_CONFIG;
+    process.env.AXL_MCP_MAX_RETRIES = '1';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    delete process.env.AXL_MCP_ENABLED_OBJECTS;
+    delete process.env.AXL_MCP_CONFIG;
+    mockClient.executeOperation.mockRejectedValue(new Error('503 Service Unavailable'));
+
+    try {
+      const failure = await handleTool(
+        'axl_execute',
+        {
+          cucm_host: creds.host,
+          cucm_username: creds.username,
+          cucm_password: creds.password,
+          cucm_version: '15.0',
+          operation: 'updatePhone',
+          data: { name: 'SEP111', description: 'legacy MCP mutation' },
+        },
+        new AxlAPIService()
+      ).catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({
+        message: expect.stringContaining('503 Service Unavailable'),
+      });
+      expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      if (originalEnabledObjects === undefined) delete process.env.AXL_MCP_ENABLED_OBJECTS;
+      else process.env.AXL_MCP_ENABLED_OBJECTS = originalEnabledObjects;
+      if (originalConfig === undefined) delete process.env.AXL_MCP_CONFIG;
+      else process.env.AXL_MCP_CONFIG = originalConfig;
+    }
+  });
+
   it.each([
     ['ECONNRESET code', Object.assign(new Error('request failed'), { code: 'ECONNRESET' })],
     [
@@ -262,10 +305,17 @@ describe('AxlAPIService.executeOperation', () => {
       mockClient.executeOperation.mockRejectedValue(transportError);
 
       const failure = await new AxlAPIService()
-        .executeOperation({ ...creds, version: '15.0' }, 'updatePhone', {
-          name: 'SEP111',
-          description: 'new',
-        })
+        .executeOperation(
+          { ...creds, version: '15.0' },
+          'updatePhone',
+          {
+            name: 'SEP111',
+            description: 'new',
+          },
+          undefined,
+          'secure',
+          STRICT_AXL_EXECUTION_POLICY
+        )
         .catch((error: unknown) => error);
 
       expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
@@ -409,7 +459,14 @@ describe('AxlAPIService.executeOperation', () => {
     );
 
     const failure = await new AxlAPIService()
-      .executeOperation({ ...creds, version: '15.0' }, 'getAuthzKey', {})
+      .executeOperation(
+        { ...creds, version: '15.0' },
+        'getAuthzKey',
+        {},
+        undefined,
+        'secure',
+        STRICT_AXL_EXECUTION_POLICY
+      )
       .catch((error: unknown) => error);
 
     expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });

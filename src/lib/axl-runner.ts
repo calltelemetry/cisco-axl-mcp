@@ -1,7 +1,10 @@
 import type { CucmCredentials } from '../types/credentials';
 import { AxlPolicyError } from '../types/axl/errors';
 import type { AxlAPIService } from '../services/axl/index';
-import { AxlAPIService as DefaultAxlAPIService } from '../services/axl/index';
+import {
+  AxlAPIService as DefaultAxlAPIService,
+  STRICT_AXL_EXECUTION_POLICY,
+} from '../services/axl/index';
 import { assertTlsMode, type ExecuteOperationOptions, type TlsMode } from './axl-client';
 import { redactCredentials, sanitizeError } from './audit-log';
 import { isSupportedCucmVersion } from './version-manager';
@@ -121,6 +124,9 @@ export async function runAxl(
   }
 
   const sensitiveValues = [request.credentials.password, request.credentials.username];
+  const strictExecutionPolicy =
+    validationMode === 'strict' ? STRICT_AXL_EXECUTION_POLICY : undefined;
+  const executionPolicyArgs = strictExecutionPolicy ? ([strictExecutionPolicy] as const) : [];
   const redactResponse = (result: unknown): unknown =>
     redactCredentials(result, sensitiveValues, {
       kind: 'axl-response',
@@ -150,7 +156,8 @@ export async function runAxl(
         dispatchRequest.operation,
         dispatchRequest.data as Record<string, unknown>,
         dispatchRequest.opts,
-        dispatchRequest.tlsMode
+        dispatchRequest.tlsMode,
+        ...executionPolicyArgs
       );
       return redactResponse(result);
     }
@@ -160,7 +167,8 @@ export async function runAxl(
       dispatchRequest.operation,
       dispatchRequest.data,
       dispatchRequest.opts,
-      dispatchRequest.tlsMode
+      dispatchRequest.tlsMode,
+      ...executionPolicyArgs
     );
     return redactResponse(result);
   } catch (error) {

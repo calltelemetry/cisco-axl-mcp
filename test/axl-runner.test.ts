@@ -158,6 +158,32 @@ describe('runAxl policy separation', () => {
       )
     ).resolves.toBeDefined();
     expect(fake.executeOperation).toHaveBeenCalledOnce();
+    expect(fake.executeOperation.mock.calls[0]![5]).toEqual({ mutationRetryMode: 'strict' });
+  });
+
+  it('passes strict execution policy to listAll outside SOAP request options', async () => {
+    const fake = service({ rows: [], totalFetched: 0, pages: 1, truncated: false });
+    const listRequest = request({
+      operation: 'listPhone',
+      data: { searchCriteria: { name: '%' } },
+      autoPage: true,
+    });
+
+    await expect(
+      runAxl(
+        { request: listRequest, source: 'cli', validationMode: 'strict' },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).resolves.toMatchObject({ totalFetched: 0 });
+
+    expect(fake.listAll).toHaveBeenCalledWith(
+      listRequest.credentials,
+      listRequest.operation,
+      listRequest.data,
+      undefined,
+      listRequest.tlsMode,
+      { mutationRetryMode: 'strict' }
+    );
   });
 
   it('recursively redacts sensitive response fields before returning them', async () => {
@@ -286,7 +312,8 @@ describe('runAxl policy separation', () => {
       readRequest.operation,
       readRequest.data,
       undefined,
-      readRequest.tlsMode
+      readRequest.tlsMode,
+      { mutationRetryMode: 'strict' }
     );
   });
 });
@@ -787,7 +814,8 @@ describe('mutation grant enforcement', () => {
       'updatePhone',
       { name: 'SEP001122334455', nested: { description: 'approved' } },
       undefined,
-      'secure'
+      'secure',
+      { mutationRetryMode: 'strict' }
     );
   });
 
@@ -851,5 +879,6 @@ describe('mutation grant enforcement', () => {
       code: 'AXL_MUTATION_GRANT_REPLAYED',
     });
     expect(fake.executeOperation).toHaveBeenCalledOnce();
+    expect(fake.executeOperation.mock.calls[0]![5]).toEqual({ mutationRetryMode: 'strict' });
   });
 });

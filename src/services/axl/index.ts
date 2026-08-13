@@ -15,6 +15,14 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+export interface AxlServiceExecutionPolicy {
+  readonly mutationRetryMode: 'strict';
+}
+
+export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.freeze({
+  mutationRetryMode: 'strict',
+});
+
 export class AxlAPIService {
   constructor(private readonly defaultTlsMode: TlsMode = 'secure') {}
 
@@ -23,7 +31,8 @@ export class AxlAPIService {
     operation: string,
     tags: unknown,
     opts?: ExecuteOperationOptions,
-    tlsMode: TlsMode = this.defaultTlsMode
+    tlsMode: TlsMode = this.defaultTlsMode,
+    executionPolicy?: AxlServiceExecutionPolicy
   ): Promise<unknown> {
     // Apply adaptive delay based on recent throttle history
     const adaptiveDelay = getAdaptiveDelay(credentials.host);
@@ -32,12 +41,14 @@ export class AxlAPIService {
     }
 
     const startTime = Date.now();
-    const mutation = isMutationOperationForVersion(operation, credentials.version);
+    const strictMutation =
+      executionPolicy?.mutationRetryMode === 'strict' &&
+      isMutationOperationForVersion(operation, credentials.version);
 
     try {
       const result = await withRetry(
         () => getAxlClient(credentials, tlsMode).executeOperation(operation, tags, opts),
-        mutation ? { maxRetries: 0 } : undefined,
+        strictMutation ? { maxRetries: 0 } : undefined,
         {
           onRetry: (attempt, error) => {
             const errMsg = error instanceof Error ? error.message : String(error);
@@ -77,7 +88,7 @@ export class AxlAPIService {
         request: tags,
         sensitiveValues: [credentials.password, credentials.username],
       });
-      if (mutation && isRetryable(error)) {
+      if (strictMutation && isRetryable(error)) {
         throw new AxlPolicyError(
           'AXL_MUTATION_OUTCOME_UNKNOWN',
           'Mutation outcome is unknown after a retryable transport failure; reconciliation/readback is required before another attempt'
@@ -92,7 +103,8 @@ export class AxlAPIService {
     operation: string,
     data: Record<string, unknown>,
     opts?: ExecuteOperationOptions,
-    tlsMode: TlsMode = this.defaultTlsMode
+    tlsMode: TlsMode = this.defaultTlsMode,
+    executionPolicy?: AxlServiceExecutionPolicy
   ): Promise<{ rows: unknown[]; totalFetched: number; pages: number; truncated: boolean }> {
     const maxRows = parseInt(process.env.AXL_MCP_MAX_AUTOPAGINATE ?? '10000', 10) || 10000;
     const pageSize = 1000;
@@ -107,7 +119,14 @@ export class AxlAPIService {
         first: String(pageSize),
       };
 
-      const result = await this.executeOperation(credentials, operation, pageData, opts, tlsMode);
+      const result = await this.executeOperation(
+        credentials,
+        operation,
+        pageData,
+        opts,
+        tlsMode,
+        executionPolicy
+      );
       const pageRows = extractRows(result);
 
       allRows.push(...pageRows);

@@ -5,7 +5,12 @@ import { jsonResponse } from './types';
 import { resolveCredentials } from '../lib/credential-resolver';
 import { getEnabledTopLevelObjects, isSqlEnabled } from '../lib/tool-config';
 import { toMcpError } from '../types/axl/errors';
-import { assertRecord, extractCredentialOverrides, optionalObject, requireString } from '../types/axl/guards';
+import {
+  assertRecord,
+  extractCredentialOverrides,
+  optionalObject,
+  requireString,
+} from '../types/axl/guards';
 import {
   AXL_ACTION_OPERATIONS,
   AXL_OBJECT_OPERATIONS,
@@ -41,7 +46,8 @@ export function buildReturnedTags(fields: string[]): Record<string, unknown> {
     const parts = field.split('.');
     let current = result;
     for (let i = 0; i < parts.length; i++) {
-      const key = parts[i]!;
+      const key = parts[i];
+      if (key === undefined) continue;
       if (i === parts.length - 1) {
         current[key] = true;
       } else {
@@ -58,7 +64,8 @@ export function buildReturnedTags(fields: string[]): Record<string, unknown> {
 export const tools: ToolDefinition[] = [
   {
     name: 'axl_execute',
-    description: 'Execute any AXL operation by name (raw access via cisco-axl executeOperation). Supports CRUD operations (add/get/list/update/remove) as well as action operations (apply/reset/restart/do/lock/wipe). Use axl_describe_operation to explore the input schema for any operation.',
+    description:
+      'Execute any AXL operation by name (raw access via cisco-axl executeOperation). Supports CRUD operations (add/get/list/update/remove) as well as action operations (apply/reset/restart/do/lock/wipe). Use axl_describe_operation to explore the input schema for any operation.',
     annotations: {
       title: 'Execute AXL Operation',
       readOnlyHint: false,
@@ -73,15 +80,20 @@ export const tools: ToolDefinition[] = [
         cucm_username: { type: 'string' },
         cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
-        operation: { type: 'string', description: 'AXL operation name (e.g. addPhone, getUser, listLineGroup)' },
+        operation: {
+          type: 'string',
+          description: 'AXL operation name (e.g. addPhone, getUser, listLineGroup)',
+        },
         data: {
           type: 'object',
-          description: 'AXL operation payload — the JSON body for the SOAP request (e.g. { "name": "SEPAAAABBBBCCCC" } for getPhone).',
+          description:
+            'AXL operation payload — the JSON body for the SOAP request (e.g. { "name": "SEPAAAABBBBCCCC" } for getPhone).',
         },
         returnedTags: {
           type: 'array',
           items: { type: 'string' },
-          description: 'List of field names to return. Use dot notation for nested fields (e.g. ["name", "model", "lines.line.dirn.pattern"]). Converted to AXL returnedTags format automatically.',
+          description:
+            'List of field names to return. Use dot notation for nested fields (e.g. ["name", "model", "lines.line.dirn.pattern"]). Converted to AXL returnedTags format automatically.',
         },
         opts: {
           type: 'object',
@@ -89,7 +101,8 @@ export const tools: ToolDefinition[] = [
         },
         autoPage: {
           type: 'boolean',
-          description: 'Auto-paginate list operations. Fetches all pages and returns combined results. Max 10,000 rows. Only valid for list* operations.',
+          description:
+            'Auto-paginate list operations. Fetches all pages and returns combined results. Max 10,000 rows. Only valid for list* operations.',
         },
       },
       required: ['operation', 'data'],
@@ -112,7 +125,8 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'axl_list_operations',
-    description: 'List all available operation names for a given top-level AXL object (CRUD verbs and action verbs such as apply/reset/restart where available)',
+    description:
+      'List all available operation names for a given top-level AXL object (CRUD verbs and action verbs such as apply/reset/restart where available)',
     annotations: {
       title: 'List AXL Operations',
       readOnlyHint: true,
@@ -123,14 +137,18 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        objectName: { type: 'string', description: 'Top-level object name (e.g. Phone, User, LineGroup)' },
+        objectName: {
+          type: 'string',
+          description: 'Top-level object name (e.g. Phone, User, LineGroup)',
+        },
       },
       required: ['objectName'],
     },
   },
   {
     name: 'axl_describe_operation',
-    description: 'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute. Works for CRUD operations and action operations (apply/reset/restart/do/lock/wipe).',
+    description:
+      'Describe the input schema for an AXL operation — shows required fields, types, enums, and structure needed to build the data payload for axl_execute. Works for CRUD operations and action operations (apply/reset/restart/do/lock/wipe).',
     annotations: {
       title: 'Describe AXL Operation Schema',
       readOnlyHint: true,
@@ -143,7 +161,8 @@ export const tools: ToolDefinition[] = [
       properties: {
         operationName: {
           type: 'string',
-          description: 'AXL operation name (e.g. addPhone, getUser, listLine). Use axl_list_operations to discover valid names.',
+          description:
+            'AXL operation name (e.g. addPhone, getUser, listLine). Use axl_list_operations to discover valid names.',
         },
       },
       required: ['operationName'],
@@ -151,7 +170,8 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'axl_list_action_operations',
-    description: 'List all non-CRUD AXL action operations (apply/do/reset/restart/lock/wipe/assign/unassign). Optionally filter by object name or verb prefix. Use axl_describe_operation to get the input schema for any listed operation.',
+    description:
+      'List all non-CRUD AXL action operations (apply/do/reset/restart/lock/wipe/assign/unassign). Optionally filter by object name or verb prefix. Use axl_describe_operation to get the input schema for any listed operation.',
     annotations: {
       title: 'List AXL Action Operations',
       readOnlyHint: true,
@@ -164,18 +184,21 @@ export const tools: ToolDefinition[] = [
       properties: {
         objectName: {
           type: 'string',
-          description: 'Filter to actions for a specific top-level object (e.g. Phone, Line). Omit to list all action operations.',
+          description:
+            'Filter to actions for a specific top-level object (e.g. Phone, Line). Omit to list all action operations.',
         },
         verb: {
           type: 'string',
-          description: 'Filter by verb prefix: apply, do, reset, restart, lock, wipe, assign, unassign. Omit to list all verbs.',
+          description:
+            'Filter by verb prefix: apply, do, reset, restart, lock, wipe, assign, unassign. Omit to list all verbs.',
         },
       },
     },
   },
   {
     name: 'axl_sql_query',
-    description: 'Execute a read-only SQL query against the CUCM Informix database via AXL executeSQLQuery',
+    description:
+      'Execute a read-only SQL query against the CUCM Informix database via AXL executeSQLQuery',
     annotations: {
       title: 'AXL SQL Query',
       readOnlyHint: true,
@@ -190,14 +213,18 @@ export const tools: ToolDefinition[] = [
         cucm_username: { type: 'string' },
         cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
-        sql: { type: 'string', description: 'SQL SELECT query to execute against the CUCM Informix database' },
+        sql: {
+          type: 'string',
+          description: 'SQL SELECT query to execute against the CUCM Informix database',
+        },
       },
       required: ['sql'],
     },
   },
   {
     name: 'axl_sql_update',
-    description: 'Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database via AXL executeSQLUpdate',
+    description:
+      'Execute a SQL INSERT, UPDATE, or DELETE against the CUCM Informix database via AXL executeSQLUpdate',
     annotations: {
       title: 'AXL SQL Update',
       readOnlyHint: false,
@@ -212,7 +239,11 @@ export const tools: ToolDefinition[] = [
         cucm_username: { type: 'string' },
         cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
-        sql: { type: 'string', description: 'SQL INSERT, UPDATE, or DELETE statement to execute against the CUCM Informix database' },
+        sql: {
+          type: 'string',
+          description:
+            'SQL INSERT, UPDATE, or DELETE statement to execute against the CUCM Informix database',
+        },
       },
       required: ['sql'],
     },
@@ -228,7 +259,9 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
     switch (name) {
       case 'axl_list_objects': {
         const enabled = getEnabledTopLevelObjects();
-        const objects = enabled ? (AXL_TOP_LEVEL_OBJECTS.filter(o => enabled.has(o)) as AxlTopLevelObject[]) : AXL_TOP_LEVEL_OBJECTS;
+        const objects = enabled
+          ? (AXL_TOP_LEVEL_OBJECTS.filter(o => enabled.has(o)) as AxlTopLevelObject[])
+          : AXL_TOP_LEVEL_OBJECTS;
         return jsonResponse({
           wsdlVersion: AXL_OBJECTS_SOURCE_WSDL_VERSION,
           objectCount: objects.length,
@@ -277,16 +310,21 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
         const credentials = resolveCredentials(extractCredentialOverrides(obj));
         const operation = requireString(obj, 'operation');
         const data = optionalObject(obj, 'data') ?? {};
-        const returnedTagsArray = Array.isArray(obj.returnedTags) ? obj.returnedTags.filter((t): t is string => typeof t === 'string') : undefined;
-        const tags = returnedTagsArray && returnedTagsArray.length > 0
-          ? { ...data, returnedTags: buildReturnedTags(returnedTagsArray) }
-          : data;
+        const returnedTagsArray = Array.isArray(obj.returnedTags)
+          ? obj.returnedTags.filter((t): t is string => typeof t === 'string')
+          : undefined;
+        const tags =
+          returnedTagsArray && returnedTagsArray.length > 0
+            ? { ...data, returnedTags: buildReturnedTags(returnedTagsArray) }
+            : data;
         const rawOpts = optionalObject(obj, 'opts');
         const opts: ExecuteOperationOptions | undefined = rawOpts
           ? {
               clean: typeof rawOpts.clean === 'boolean' ? rawOpts.clean : undefined,
               removeAttributes:
-                typeof rawOpts.removeAttributes === 'boolean' ? rawOpts.removeAttributes : undefined,
+                typeof rawOpts.removeAttributes === 'boolean'
+                  ? rawOpts.removeAttributes
+                  : undefined,
               dataContainerIdentifierTails:
                 typeof rawOpts.dataContainerIdentifierTails === 'string'
                   ? rawOpts.dataContainerIdentifierTails
@@ -306,16 +344,24 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
               );
             }
           } else if (!enabled.has(objectName)) {
-            throw new McpError(ErrorCode.InvalidParams, `Operation "${operation}" targets "${objectName}" which is not enabled`);
+            throw new McpError(
+              ErrorCode.InvalidParams,
+              `Operation "${operation}" targets "${objectName}" which is not enabled`
+            );
           }
         }
 
         // Auto-pagination for list operations
         if (obj.autoPage === true) {
           if (!operation.startsWith('list')) {
-            throw new McpError(ErrorCode.InvalidParams, `autoPage is only valid for list operations, got "${operation}"`);
+            throw new McpError(
+              ErrorCode.InvalidParams,
+              `autoPage is only valid for list operations, got "${operation}"`
+            );
           }
-          return jsonResponse(await axlAPI.listAll(credentials, operation, tags as Record<string, unknown>, opts));
+          return jsonResponse(
+            await axlAPI.listAll(credentials, operation, tags as Record<string, unknown>, opts)
+          );
         }
 
         return jsonResponse(await axlAPI.executeOperation(credentials, operation, tags, opts));
@@ -338,7 +384,10 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
       }
       case 'axl_sql_query': {
         if (!isSqlEnabled()) {
-          throw new McpError(ErrorCode.InvalidParams, 'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)');
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)'
+          );
         }
         const obj = assertRecord(args);
         const credentials = resolveCredentials(extractCredentialOverrides(obj));
@@ -347,12 +396,17 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
       }
       case 'axl_sql_update': {
         if (!isSqlEnabled()) {
-          throw new McpError(ErrorCode.InvalidParams, 'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)');
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)'
+          );
         }
         const obj = assertRecord(args);
         const credentials = resolveCredentials(extractCredentialOverrides(obj));
         const sql = requireString(obj, 'sql');
-        return jsonResponse(await axlAPI.executeOperation(credentials, 'executeSQLUpdate', { sql }));
+        return jsonResponse(
+          await axlAPI.executeOperation(credentials, 'executeSQLUpdate', { sql })
+        );
       }
       default:
         return null;

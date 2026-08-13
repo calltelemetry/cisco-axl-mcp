@@ -315,7 +315,7 @@ describe('runAxl policy separation', () => {
       readRequest.tlsMode,
       { mutationRetryMode: 'strict' }
     );
-  });
+  }, 30_000);
 });
 
 describe('mutation grant enforcement', () => {

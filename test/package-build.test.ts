@@ -20,6 +20,12 @@ interface InstalledPackage {
   metadata: PackageMetadata;
 }
 
+interface PackageArtifacts {
+  buildRoot: string;
+  packedRoot: string;
+  installed: InstalledPackage;
+}
+
 function commandEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.DEBUG;
@@ -123,17 +129,27 @@ async function initializeMcp(binaryPath: string): Promise<{
 
 describe('published package distribution', () => {
   let tempRoot: string;
-  let installed: InstalledPackage;
+  let artifacts: PackageArtifacts;
 
   beforeAll(async () => {
     tempRoot = await mkdtemp(join(tmpdir(), 'cisco-axl-package-'));
 
-    const build = run('yarn', ['build']);
-    expectCommandSuccess(build);
-
     const tarball = join(tempRoot, 'cisco-axl-mcp.tgz');
-    const pack = run('yarn', ['pack', '--filename', tarball]);
-    expectCommandSuccess(pack);
+    const previousUmask = process.umask(0o000);
+    try {
+      const build = run('yarn', ['build']);
+      expectCommandSuccess(build);
+
+      const pack = run('yarn', ['pack', '--filename', tarball]);
+      expectCommandSuccess(pack);
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    const packedRoot = join(tempRoot, 'packed');
+    await mkdir(packedRoot);
+    const extract = run('tar', ['-xzf', tarball, '-C', packedRoot]);
+    expectCommandSuccess(extract);
 
     const installRoot = join(tempRoot, 'consumer');
     await mkdir(installRoot);
@@ -145,9 +161,13 @@ describe('published package distribution', () => {
     expectCommandSuccess(install);
 
     const packageRoot = join(installRoot, 'node_modules', '@calltelemetry', 'cisco-axl-mcp');
-    installed = {
-      root: packageRoot,
-      metadata: JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')),
+    artifacts = {
+      buildRoot: workspaceRoot,
+      packedRoot: join(packedRoot, 'package'),
+      installed: {
+        root: packageRoot,
+        metadata: JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')),
+      },
     };
   }, 180_000);
 
@@ -156,16 +176,18 @@ describe('published package distribution', () => {
   });
 
   it('publishes explicit MCP and CLI executable bins with shebangs', async () => {
-    expect(installed.metadata.bin).toEqual({
+    expect(artifacts.installed.metadata.bin).toEqual({
       'cisco-axl-mcp': 'build/index.js',
       'cisco-axl': 'build/cli.js',
     });
 
-    for (const entry of Object.values(installed.metadata.bin)) {
-      const entryPath = join(installed.root, entry);
-      expect(await readFile(entryPath, 'utf8')).toMatch(/^#!\/usr\/bin\/env node\n/);
-      if (process.platform !== 'win32') {
-        expect((await stat(entryPath)).mode & 0o111).toBe(0o111);
+    for (const entry of Object.values(artifacts.installed.metadata.bin)) {
+      for (const root of [artifacts.buildRoot, artifacts.packedRoot, artifacts.installed.root]) {
+        const entryPath = join(root, entry);
+        expect(await readFile(entryPath, 'utf8')).toMatch(/^#!\/usr\/bin\/env node\n/);
+        if (process.platform !== 'win32') {
+          expect((await stat(entryPath)).mode & 0o777).toBe(0o755);
+        }
       }
     }
   });
@@ -176,7 +198,7 @@ describe('published package distribution', () => {
       ['build/cli.js', 'runCli'],
     ] as const;
     for (const [entry, exportName] of entries) {
-      const imported = await importBuiltEntry(join(installed.root, entry), exportName);
+      const imported = await importBuiltEntry(join(artifacts.installed.root, entry), exportName);
       expectCommandSuccess(imported);
       expect(imported.stdout).toBe('imported\n');
       expect(imported.stderr).toBe('');
@@ -184,7 +206,11 @@ describe('published package distribution', () => {
   });
 
   it('runs the installed CLI as one JSON-envelope stdout document', () => {
-    const cli = join(dirname(dirname(installed.root)), '.bin', executableName('cisco-axl'));
+    const cli = join(
+      dirname(dirname(artifacts.installed.root)),
+      '.bin',
+      executableName('cisco-axl')
+    );
     const result = run(cli, ['versions']);
     expectCommandSuccess(result);
     expect(result.stderr).toBe('');
@@ -199,7 +225,11 @@ describe('published package distribution', () => {
   });
 
   it('runs installed MCP stdio with JSON-only stdout and package metadata version', async () => {
-    const mcp = join(dirname(dirname(installed.root)), '.bin', executableName('cisco-axl-mcp'));
+    const mcp = join(
+      dirname(dirname(artifacts.installed.root)),
+      '.bin',
+      executableName('cisco-axl-mcp')
+    );
     const initialized = await initializeMcp(mcp);
 
     const stdoutLines = initialized.stdout.trim().split('\n');
@@ -211,7 +241,7 @@ describe('published package distribution', () => {
       result: {
         serverInfo: {
           name: 'cisco-axl-mcp',
-          version: installed.metadata.version,
+          version: artifacts.installed.metadata.version,
         },
       },
     });

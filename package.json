@@ -17,7 +17,7 @@
   "scripts": {
     "generate:types": "tsx scripts/generate-types.ts",
     "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
-    "build": "vite build && chmod +x build/index.js build/cli.js",
+    "build": "vite build && chmod 755 build/index.js build/cli.js",
     "start": "node build/index.js",
     "dev": "vite build --watch",
     "typecheck": "tsc --noEmit",

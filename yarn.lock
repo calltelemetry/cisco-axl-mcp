@@ -119,6 +119,7 @@ __metadata:
   peerDependencies:
     typescript: ^5.0.0 || ^6.0.0
   bin:
+    cisco-axl: build/cli.js
     cisco-axl-mcp: build/index.js
   languageName: unknown
   linkType: soft

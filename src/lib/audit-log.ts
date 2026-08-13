@@ -1,4 +1,12 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,52 +24,186 @@ export interface AuditEntry {
 
 export type AuditLogLevel = 'off' | 'metadata' | 'request' | 'full';
 
-/**
- * Determine audit log level from environment.
- *
- * AXL_MCP_AUDIT_LOG controls what gets logged:
- *   - "off"      — no audit logging
- *   - "metadata" — operation, status, duration, rows (no payloads)
- *   - "request"  — metadata + request payload with redacted credentials (default)
- *   - "full"     — metadata + request + response payloads
- */
+export type RedactionContext =
+  | { kind: 'general' }
+  | { kind: 'axl-response'; operation: string }
+  | { kind: 'audit-entry'; operation: string };
+
+/** Metadata-only is the safe default; payload logging must be explicitly enabled. */
 export function getAuditLogLevel(): AuditLogLevel {
-  const val = (process.env.AXL_MCP_AUDIT_LOG ?? 'request').toLowerCase().trim();
+  const val = (process.env.AXL_MCP_AUDIT_LOG ?? 'metadata').toLowerCase().trim();
   if (val === 'off' || val === 'false' || val === '0' || val === 'none') return 'off';
   if (val === 'metadata' || val === 'meta') return 'metadata';
+  if (val === 'request' || val === 'req' || val === 'true' || val === '1') return 'request';
   if (val === 'full' || val === 'all') return 'full';
-  return 'request'; // default
+  return 'metadata';
 }
 
-const CREDENTIAL_KEYS = new Set([
-  'cucm_password', 'cucm_username', 'password', 'username',
-  'cucm_host', 'host',
-]);
+function isCredentialKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (
+    normalized === 'host' ||
+    normalized.endsWith('host') ||
+    normalized === 'user' ||
+    normalized.endsWith('username') ||
+    normalized === 'login' ||
+    normalized === 'auth' ||
+    normalized.endsWith('auth') ||
+    normalized.includes('authentication') ||
+    normalized.includes('password') ||
+    normalized.endsWith('passwd') ||
+    normalized.endsWith('pwd') ||
+    normalized === 'pass' ||
+    normalized.includes('passcode') ||
+    normalized === 'pin' ||
+    normalized.includes('secret') ||
+    normalized.includes('token') ||
+    normalized.includes('authorization') ||
+    normalized.includes('apikey') ||
+    normalized.includes('accesskey') ||
+    normalized.includes('secretkey') ||
+    normalized === 'creds' ||
+    normalized.includes('credential')
+  );
+}
 
-/**
- * Deep-clone an object and redact credential fields.
- */
-export function redactCredentials(obj: unknown): unknown {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(redactCredentials);
+function decodeJsonKey(key: string): string {
+  try {
+    return JSON.parse(`"${key}"`) as string;
+  } catch {
+    return key;
+  }
+}
 
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (CREDENTIAL_KEYS.has(key) && typeof value === 'string') {
-      result[key] = '***';
-    } else if (typeof value === 'object' && value !== null) {
-      result[key] = redactCredentials(value);
-    } else {
-      result[key] = value;
+function redactQuotedCredentialValues(value: string): string {
+  const escaped = value.replace(
+    /(\\"((?:\\\\.|[^"\\])*)\\"\s*:\s*)(?:\\"(?:\\\\.|[^"\\])*\\"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/g,
+    (match, prefix: string, key: string) =>
+      isCredentialKey(decodeJsonKey(key)) ? `${prefix}\\"***\\"` : match
+  );
+  return escaped.replace(
+    /("((?:\\.|[^"\\])*)"\s*:\s*)(?:"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/g,
+    (match, prefix: string, key: string) =>
+      isCredentialKey(decodeJsonKey(key)) ? `${prefix}"***"` : match
+  );
+}
+
+function redactString(value: string, sensitiveValues: readonly string[]): string {
+  let redacted = value;
+  for (const secret of sensitiveValues) {
+    if (secret) redacted = redacted.split(secret).join('***');
+  }
+
+  redacted = redacted.replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi, '$1***:***@');
+  redacted = redacted.replace(/(<((?:[a-z0-9_-]*:)?user)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, '$1***$3');
+  redacted = redacted.replace(
+    /(<((?:[a-z0-9_-]*:)?[a-z0-9_-]*(?:password|passwd|pwd|passcode|pass|secret|token|authorization|authentication|auth|api[_-]?key|access[_-]?key|secret[_-]?key|username|login|credential|creds)[a-z0-9_-]*)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi,
+    '$1***$3'
+  );
+  redacted = redacted.replace(/(<((?:[a-z0-9_-]+:)?pin)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, '$1***$3');
+  redacted = redactQuotedCredentialValues(redacted);
+  redacted = redacted.replace(
+    /(\b(?:authorization|authentication|auth)\s*[:=]\s*)[^\r\n]*/gi,
+    '$1***'
+  );
+  redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
+  redacted = redacted.replace(
+    /(\b(?:password|passwd|pwd|passcode|pass|pin|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
+    '$1***'
+  );
+  return redacted;
+}
+
+function isPlainObjectOrArray(value: unknown): value is Record<string, unknown> | unknown[] {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isAxlUserResponseWrapper(
+  key: string,
+  value: unknown,
+  path: readonly string[],
+  context: RedactionContext
+): boolean {
+  if (key !== 'user' || !isPlainObjectOrArray(value)) return false;
+  if (context.kind === 'general') return false;
+  if (context.operation !== 'getUser' && context.operation !== 'listUser') return false;
+
+  if (context.kind === 'axl-response') {
+    return path.length === 1 && path[0] === 'return';
+  }
+  return path.length === 2 && path[0] === 'response' && path[1] === 'return';
+}
+
+/** Deep-clone and recursively redact credential keys and credential-like values. */
+export function redactCredentials(
+  obj: unknown,
+  sensitiveValues: readonly string[] = [],
+  context: RedactionContext = { kind: 'general' }
+): unknown {
+  const seen = new WeakSet<object>();
+
+  const redact = (value: unknown, path: readonly string[]): unknown => {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return redactString(value, sensitiveValues);
+    if (typeof value !== 'object') return value;
+    if (seen.has(value)) return '[Circular]';
+
+    seen.add(value);
+    try {
+      if (Array.isArray(value))
+        return value.map((item, index) => redact(item, [...path, String(index)]));
+      if (value instanceof Date) return value.toISOString();
+
+      const result: Record<string, unknown> = {};
+      if (value instanceof Error) {
+        result.name = value.name;
+        result.message = redactString(value.message, sensitiveValues);
+        if (value.stack) result.stack = redactString(value.stack, sensitiveValues);
+        if (value.cause !== undefined) result.cause = redact(value.cause, [...path, 'cause']);
+      }
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        const itemPath = [...path, key];
+        result[key] =
+          isCredentialKey(key) && !isAxlUserResponseWrapper(key, item, path, context)
+            ? '***'
+            : redact(item, itemPath);
+      }
+      return result;
+    } finally {
+      seen.delete(value);
+    }
+  };
+
+  return redact(obj, []);
+}
+
+export function sanitizeError(error: unknown, sensitiveValues: readonly string[] = []): Error {
+  const redacted = redactCredentials(error, sensitiveValues);
+  const details =
+    redacted && typeof redacted === 'object' ? (redacted as Record<string, unknown>) : {};
+  const message =
+    typeof details.message === 'string'
+      ? details.message
+      : redactString(error instanceof Error ? error.message : String(error), sensitiveValues);
+  const sanitized = new Error(message);
+  sanitized.name =
+    typeof details.name === 'string' ? details.name : error instanceof Error ? error.name : 'Error';
+  if (typeof details.stack === 'string') sanitized.stack = details.stack;
+  for (const [key, value] of Object.entries(details)) {
+    if (key !== 'name' && key !== 'message' && key !== 'stack') {
+      (sanitized as unknown as Record<string, unknown>)[key] = value;
     }
   }
-  return result;
+  return sanitized;
 }
 
 const DEFAULT_AUDIT_DIR = join(homedir(), '.cisco-axl-mcp', 'audit');
-const DEFAULT_MAX_SIZE_BYTES = (parseInt(process.env.AXL_MCP_AUDIT_MAX_SIZE_MB ?? '10', 10) || 10) * 1024 * 1024;
-const THROTTLE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const DEFAULT_MAX_SIZE_BYTES =
+  (parseInt(process.env.AXL_MCP_AUDIT_MAX_SIZE_MB ?? '10', 10) || 10) * 1024 * 1024;
+const THROTTLE_WINDOW_MS = 5 * 60 * 1000;
 
 let auditDir: string = DEFAULT_AUDIT_DIR;
 
@@ -74,11 +216,11 @@ export function getAuditDir(): string {
 }
 
 function ensureDir(dir: string): void {
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
 }
 
 function hostFilePath(host: string): string {
-  // Sanitize host for filename (replace colons for IPv6, etc.)
   const safe = host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
   return join(auditDir, `${safe}.jsonl`);
 }
@@ -86,19 +228,23 @@ function hostFilePath(host: string): string {
 export function writeAuditEntry(host: string, entry: AuditEntry): void {
   ensureDir(auditDir);
   const filePath = hostFilePath(host);
-  const line = JSON.stringify(entry) + '\n';
-  appendFileSync(filePath, line, 'utf-8');
+  const line =
+    JSON.stringify(
+      redactCredentials(entry, [], { kind: 'audit-entry', operation: entry.operation })
+    ) + '\n';
+  appendFileSync(filePath, line, { encoding: 'utf-8', mode: 0o600 });
+  chmodSync(filePath, 0o600);
   rotateIfNeeded(filePath);
 }
 
 function rotateIfNeeded(filePath: string): void {
   try {
-    const stats = statSync(filePath);
-    if (stats.size > DEFAULT_MAX_SIZE_BYTES) {
+    if (statSync(filePath).size > DEFAULT_MAX_SIZE_BYTES) {
       renameSync(filePath, filePath + '.1');
+      chmodSync(filePath + '.1', 0o600);
     }
   } catch {
-    // File may not exist yet or stat failed — ignore
+    // Audit persistence must not replace an operation result with a rotation failure.
   }
 }
 
@@ -108,44 +254,25 @@ export function getRecentThrottleCount(host: string): number {
 
   const cutoff = Date.now() - THROTTLE_WINDOW_MS;
   let count = 0;
-
   try {
-    const content = readFileSync(filePath, 'utf-8');
-    const lines = content.trim().split('\n');
-
-    // Read from the end for efficiency — recent entries are at the bottom
+    const lines = readFileSync(filePath, 'utf-8').trim().split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i]!.trim();
+      const line = lines[i]?.trim();
       if (!line) continue;
-
       try {
         const entry = JSON.parse(line) as AuditEntry;
-        const entryTime = new Date(entry.ts).getTime();
-
-        // Stop scanning once we're past the window
-        if (entryTime < cutoff) break;
-
+        if (new Date(entry.ts).getTime() < cutoff) break;
         if (entry.status === 'throttled') count++;
       } catch {
-        // Skip malformed lines
+        // Skip malformed lines without losing later valid audit history.
       }
     }
   } catch {
-    // File read error — return 0
+    return 0;
   }
-
   return count;
 }
 
-/**
- * Calculate adaptive delay based on recent throttle events.
- * Returns milliseconds to wait before making the next call.
- *
- * 0 throttles in last 5 min → 0ms delay
- * 1 throttle → 2000ms
- * 2 throttles → 5000ms
- * 3+ throttles → 10000ms
- */
 export function getAdaptiveDelay(host: string): number {
   const count = getRecentThrottleCount(host);
   if (count === 0) return 0;
@@ -154,9 +281,6 @@ export function getAdaptiveDelay(host: string): number {
   return 10000;
 }
 
-/**
- * Record an AXL operation result to the audit log and return the entry.
- */
 export function recordOperation(
   host: string,
   operation: string,
@@ -169,37 +293,39 @@ export function recordOperation(
     attempt?: number;
     request?: unknown;
     response?: unknown;
+    sensitiveValues?: string[];
   }
 ): AuditEntry {
   const level = getAuditLogLevel();
+  const status = result.throttled
+    ? 'throttled'
+    : result.ok
+      ? 'ok'
+      : result.attempt
+        ? 'retry'
+        : 'error';
   if (level === 'off') {
-    // Still return the entry shape for callers, just don't write
-    return {
-      ts: new Date().toISOString(),
-      operation,
-      durationMs: Date.now() - startTime,
-      status: result.throttled ? 'throttled' : result.ok ? 'ok' : result.attempt ? 'retry' : 'error',
-    };
+    return { ts: new Date().toISOString(), operation, durationMs: Date.now() - startTime, status };
   }
 
   const entry: AuditEntry = {
     ts: new Date().toISOString(),
     operation,
     durationMs: Date.now() - startTime,
-    status: result.throttled ? 'throttled' : result.ok ? 'ok' : result.attempt ? 'retry' : 'error',
+    status,
     ...(result.rows !== undefined && { rows: result.rows }),
-    ...(result.error && { error: result.error }),
+    ...(result.error && { error: redactString(result.error, result.sensitiveValues ?? []) }),
     ...(result.attempt !== undefined && { attempt: result.attempt }),
   };
 
-  // Include request payload (redacted) at 'request' or 'full' level
   if ((level === 'request' || level === 'full') && result.request !== undefined) {
-    entry.request = redactCredentials(result.request);
+    entry.request = redactCredentials(result.request, result.sensitiveValues);
   }
-
-  // Include response payload only at 'full' level
   if (level === 'full' && result.response !== undefined) {
-    entry.response = result.response;
+    entry.response = redactCredentials(result.response, result.sensitiveValues, {
+      kind: 'axl-response',
+      operation,
+    });
   }
 
   writeAuditEntry(host, entry);

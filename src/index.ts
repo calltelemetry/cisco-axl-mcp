@@ -1,30 +1,30 @@
 #!/usr/bin/env node
-import 'dotenv/config';
-
-// Default: permissive TLS (accept self-signed). CUCM labs commonly use self-signed certs.
-// Opt into strict verification with:
-// - CUCM_AXL_TLS_MODE=strict (recommended for prod)
-// - MCP_TLS_MODE=strict
-const tlsMode = (process.env.CUCM_AXL_TLS_MODE || process.env.MCP_TLS_MODE || '').toLowerCase();
-const strictTls = tlsMode === 'strict' || tlsMode === 'verify';
-if (!strictTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import { AxlAPIService } from './services/axl/index';
 import { getTools, handleTool } from './tools/index';
 import { toMcpError } from './types/axl/errors';
+import { resolveMcpTlsMode } from './lib/axl-client';
+import { isDirectExecution } from './lib/entrypoint';
+import { PACKAGE_VERSION } from './lib/package-version';
+import type { TlsMode } from './lib/axl-client';
 
 class CiscoAxlMcpServer {
   private server: Server;
   private axl: AxlAPIService;
 
-  constructor() {
+  constructor(private readonly mcpTlsMode: TlsMode) {
     this.server = new Server(
       {
         name: 'cisco-axl-mcp',
-        version: '0.1.0',
+        version: PACKAGE_VERSION,
       },
       {
         capabilities: {
@@ -33,7 +33,7 @@ class CiscoAxlMcpServer {
       }
     );
 
-    this.axl = new AxlAPIService();
+    this.axl = new AxlAPIService(this.mcpTlsMode);
     this.setupToolHandlers();
 
     this.server.onerror = error => console.error('[MCP Error]', error);
@@ -46,26 +46,45 @@ class CiscoAxlMcpServer {
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getTools() }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
-      try {
-        const { name, arguments: rawArgs } = request.params;
-        const args = rawArgs ?? {};
+    this.server.setRequestHandler(
+      CallToolRequestSchema,
+      async (request): Promise<CallToolResult> => {
+        try {
+          const { name, arguments: rawArgs } = request.params;
+          const args = rawArgs ?? {};
 
-        const result = await handleTool(name, args, this.axl);
-        if (result === null) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        return result as CallToolResult;
-      } catch (error) {
-        throw toMcpError(error);
+          const result = await handleTool(name, args, this.axl);
+          if (result === null)
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+          return result as CallToolResult;
+        } catch (error) {
+          throw toMcpError(error);
+        }
       }
-    });
+    );
   }
 
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('Cisco AXL MCP server running on stdio');
+    console.error(
+      `Cisco AXL MCP server running on stdio (TLS verification: ${this.mcpTlsMode === 'secure' ? 'enabled' : 'disabled'})`
+    );
   }
 }
 
-const server = new CiscoAxlMcpServer();
-server.run().catch(console.error);
+export async function startMcp(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (env === process.env) await import('dotenv/config');
+  // Preserve the MCP's legacy self-signed-certificate default only when mode is
+  // unset or explicitly configured as default/insecure. Invalid values fail startup.
+  const mcpTlsMode = resolveMcpTlsMode(env);
+  const server = new CiscoAxlMcpServer(mcpTlsMode);
+  await server.run();
+}
+
+if (isDirectExecution(import.meta.url)) {
+  startMcp().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

@@ -13,7 +13,7 @@ function parseResult(result: any): any {
 }
 
 describe('axl_describe_operation', () => {
-  it('returns schema for addPhone with required fields', async () => {
+  it('returns schema for addPhone with optional sequence semantics', async () => {
     const result = await handleTool('axl_describe_operation', { operationName: 'addPhone' }, mockApi);
     const data = parseResult(result);
 
@@ -28,12 +28,21 @@ describe('axl_describe_operation', () => {
     expect(data.fields.phone.required).toBe(true);
     expect(data.fields.phone.typeName).toBe('XPhone');
 
-    // nested required fields
+    // XPhone wraps its fields in an optional sequence. The fields retain their
+    // own occurrence bounds, but are not unconditionally required.
     const phoneFields = data.fields.phone.fields;
-    expect(phoneFields.name.required).toBe(true);
-    expect(phoneFields.product.required).toBe(true);
-    expect(phoneFields.protocol.required).toBe(true);
-    expect(phoneFields.devicePoolName.required).toBe(true);
+    expect(data.fields.phone.sequences).toContainEqual(
+      expect.objectContaining({
+        minOccurs: 0,
+        maxOccurs: 1,
+        fields: expect.arrayContaining(['name', 'product', 'protocol', 'devicePoolName']),
+      })
+    );
+    expect(phoneFields.name.required).toBeUndefined();
+    expect(phoneFields.name.sequence).toBe(0);
+    expect(phoneFields.product.required).toBeUndefined();
+    expect(phoneFields.protocol.required).toBeUndefined();
+    expect(phoneFields.devicePoolName.required).toBeUndefined();
 
     // optional field
     expect(phoneFields.description.required).toBeUndefined();
@@ -97,14 +106,23 @@ describe('axl_describe_operation', () => {
     expect(data.fields.uuid).toBeDefined();
   });
 
-  it('returns schema for addUser', async () => {
+  it('returns schema for addUser with optional sequence semantics', async () => {
     const result = await handleTool('axl_describe_operation', { operationName: 'addUser' }, mockApi);
     const data = parseResult(result);
 
     expect(data.verb).toBe('add');
     expect(data.object).toBe('User');
     expect(data.fields.user).toBeDefined();
-    expect(data.fields.user.fields.lastName.required).toBe(true);
+    expect(data.fields.user.required).toBe(true);
+    expect(data.fields.user.sequences).toContainEqual(
+      expect.objectContaining({
+        minOccurs: 0,
+        maxOccurs: 1,
+        fields: expect.arrayContaining(['lastName', 'userid']),
+      })
+    );
+    expect(data.fields.user.fields.lastName.required).toBeUndefined();
+    expect(data.fields.user.fields.lastName.sequence).toBe(0);
   });
 
   it('throws for unknown operation', async () => {

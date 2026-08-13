@@ -15,6 +15,7 @@
 
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
 
     "declaration": true,
@@ -29,4 +30,3 @@
   "include": ["src/**/*", "test/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "build"]
 }
-

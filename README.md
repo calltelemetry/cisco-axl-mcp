@@ -65,6 +65,88 @@ No install required — npx downloads and runs automatically:
 npx @calltelemetry/cisco-axl-mcp
 ```
 
+The package publishes two executables:
+
+| Command | Purpose |
+|---|---|
+| `cisco-axl-mcp` | MCP stdio server for MCP-compatible clients |
+| `cisco-axl` | Schema-driven JSON CLI for discovery and direct AXL execution |
+
+For a global installation:
+
+```bash
+npm install --global @calltelemetry/cisco-axl-mcp
+cisco-axl-mcp
+cisco-axl versions
+```
+
+To run the secondary CLI without installing it globally, select its package binary explicitly:
+
+```bash
+npx --package @calltelemetry/cisco-axl-mcp cisco-axl versions
+```
+
+## Command-line AXL client
+
+`cisco-axl` writes one `cisco-axl.cli.v1` JSON envelope to stdout. Human-readable
+diagnostics and TLS warnings go to stderr, which keeps stdout safe for pipes and automation.
+
+Discovery commands do not require CUCM credentials:
+
+```bash
+cisco-axl versions
+cisco-axl objects --version 15.0
+cisco-axl operations --version 15.0 --object Phone
+cisco-axl describe getPhone --version 15.0
+```
+
+Execution credentials come from `CUCM_HOST`, `CUCM_USERNAME`, `CUCM_PASSWORD`, and
+`CUCM_VERSION`. `--host` and `--version` can override the target for one call. JSON request
+data can come from `--data`, `--data @file.json`, or stdin; combining an explicit source with
+non-empty stdin is rejected.
+
+```bash
+export CUCM_HOST=cucm.example.com
+export CUCM_USERNAME=axl_user
+export CUCM_PASSWORD=axl_password
+export CUCM_VERSION=15.0
+
+cisco-axl execute getPhone --data '{"name":"SEP001122334455"}'
+cisco-axl execute getPhone --data @get-phone.json
+printf '%s\n' '{"searchCriteria":{"name":"SEP%"},"returnedTags":{"name":""}}' \
+  | cisco-axl execute listPhone --auto-page
+
+cisco-axl sql query --file inventory.sql
+printf '%s\n' 'select name from device' | cisco-axl sql query
+```
+
+Mutations require both an explicit write flag and an exact confirmation token. For an AXL
+operation, the token is the operation name; SQL updates use `sql-update`:
+
+```bash
+cisco-axl execute updatePhone \
+  --data @update-phone.json \
+  --write \
+  --confirm updatePhone
+
+cisco-axl sql update \
+  --file update-device.sql \
+  --write \
+  --confirm sql-update
+```
+
+### TLS behavior
+
+The direct `cisco-axl` CLI verifies CUCM TLS certificates by default. Use `--insecure` only for
+a specific call to a cluster whose certificate cannot be verified; the CLI emits a warning on
+stderr.
+
+The MCP executable retains its established compatibility default for self-signed CUCM
+certificates: verification is disabled when no TLS mode is configured. To enable verification,
+set `CUCM_AXL_TLS_MODE=secure` (preferred) or `MCP_TLS_MODE=secure`. The aliases `strict` and
+`verify` also select secure mode; `default` and `insecure` select insecure mode. Unknown values
+fail startup instead of silently changing TLS policy.
+
 ## Quick Start
 
 ### Claude Code (one-liner)
@@ -148,7 +230,7 @@ When set, only the specified object types and their CRUD + action operations are
 | `AXL_MCP_RETRY_BASE_DELAY_MS` | `1000` | Initial backoff delay in milliseconds |
 | `AXL_MCP_ENABLE_SQL` | `true` | Enable SQL tools (`false` to disable) |
 | `AXL_MCP_MAX_AUTOPAGINATE` | `10000` | Max rows returned by `autoPage` |
-| `AXL_MCP_AUDIT_LOG` | `request` | Audit log detail level (see below) |
+| `AXL_MCP_AUDIT_LOG` | `metadata` | Audit log detail level (see below); unknown values fail closed to metadata |
 | `AXL_MCP_AUDIT_MAX_SIZE_MB` | `10` | Audit log rotation threshold per host |
 
 ### Audit Log
@@ -158,8 +240,8 @@ Every AXL call is logged per-host to `~/.cisco-axl-mcp/audit/<host>.jsonl`. The 
 | Level | Request Payload | Response Payload | Description |
 |-------|:-:|:-:|-------------|
 | `off` | | | No audit logging |
-| `metadata` | | | Operation, status, duration, rows only |
-| `request` (default) | **yes** | | Metadata + request payload with credentials redacted |
+| `metadata` (default) | | | Operation, status, duration, rows only; also used for unknown or empty values |
+| `request` | **yes** | | Metadata + request payload with credentials redacted |
 | `full` | **yes** | **yes** | Metadata + request + full response payload |
 
 Credentials (`cucm_password`, `cucm_username`, `cucm_host`, `password`, `username`, `host`) are automatically redacted from request payloads at all log levels.

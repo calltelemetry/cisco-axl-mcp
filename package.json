@@ -1,6 +1,6 @@
 {
   "name": "@calltelemetry/cisco-axl-mcp",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
   "repository": "https://github.com/calltelemetry/cisco-axl-mcp.git",
   "type": "module",

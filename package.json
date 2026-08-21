@@ -1,12 +1,17 @@
 {
   "name": "@calltelemetry/cisco-axl-mcp",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
+  "repository": "https://github.com/calltelemetry/cisco-axl-mcp.git",
   "type": "module",
+  "engines": {
+    "node": ">=22.14.0",
+    "npm": ">=11.5.1"
+  },
   "main": "build/index.js",
   "bin": {
-    "cisco-axl-mcp": "build/index.js",
-    "cisco-axl": "build/cli.js"
+    "cisco-axl": "build/cli.js",
+    "cisco-axl-mcp": "build/index.js"
   },
   "files": [
     "build/**/*"
@@ -27,6 +32,7 @@
     "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'scripts/**/*.ts'",
     "test": "vitest run",
     "test:mcp": "vitest run test/mcp-conformance.test.ts",
+    "package:smoke": "vitest run test/package-build.test.ts",
     "validate": "yarn typecheck && yarn lint --max-warnings=50 && yarn test",
     "prepack": "yarn build && yarn test:mcp"
   },
@@ -48,12 +54,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@semantic-release/changelog": "^7.0.0",
-    "@semantic-release/git": "^11.0.1",
     "@vitest/coverage-v8": "^4.1.7",
     "eslint": "^10.4.0",
     "prettier": "^3.8.3",
-    "semantic-release": "^25.0.3",
     "strong-soap": "^6.0.1",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",

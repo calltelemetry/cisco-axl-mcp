@@ -37,12 +37,12 @@ function commandEnvironment(): NodeJS.ProcessEnv {
 function run(
   command: string,
   args: readonly string[],
-  options: { cwd?: string; timeout?: number } = {}
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number } = {}
 ): SpawnSyncReturns<string> {
   return spawnSync(command, args, {
     cwd: options.cwd ?? workspaceRoot,
     encoding: 'utf8',
-    env: commandEnvironment(),
+    env: options.env ?? commandEnvironment(),
     maxBuffer: 10 * 1024 * 1024,
     timeout: options.timeout ?? 120_000,
   });
@@ -153,10 +153,14 @@ describe('published package distribution', () => {
 
     const installRoot = join(tempRoot, 'consumer');
     await mkdir(installRoot);
+    const installEnvironment = commandEnvironment();
+    installEnvironment.HOME = tempRoot;
+    installEnvironment.NPM_CONFIG_USERCONFIG = join(tempRoot, '.npmrc');
+    installEnvironment.NPM_CONFIG_CACHE = join(tempRoot, 'npm-cache');
     const install = run(
       'npm',
       ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock', tarball],
-      { cwd: installRoot }
+      { cwd: installRoot, env: installEnvironment }
     );
     expectCommandSuccess(install);
 

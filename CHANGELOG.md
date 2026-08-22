@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.6.0...v0.7.0) (2026-08-22)
+
+
+### Features
+
+* harden AXL MCP execution and release contract ([#173](https://github.com/calltelemetry/cisco-axl-mcp/issues/173)) ([323ab47](https://github.com/calltelemetry/cisco-axl-mcp/commit/323ab47e3a0f643da8cdb97c2a8069252de15d21))
+
+
+### Bug Fixes
+
+* use configured release app id ([#174](https://github.com/calltelemetry/cisco-axl-mcp/issues/174)) ([57bd0e2](https://github.com/calltelemetry/cisco-axl-mcp/commit/57bd0e2d6dcb51b339ef7db562db4ec33490f453))
+
 ## [0.6.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.5.1...v0.6.0) (2026-08-21)
 
 

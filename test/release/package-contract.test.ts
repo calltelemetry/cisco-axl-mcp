@@ -78,10 +78,10 @@ describe('public npm release contract', () => {
     expect(release).toContain(
       'googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5'
     );
-    expect(release).toContain('RELEASE_APP_CLIENT_ID');
+    expect(release).toContain('RELEASE_APP_ID');
     expect(release).toContain('RELEASE_APP_PRIVATE_KEY');
-    expect(release).toContain('client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}');
-    expect(release).not.toContain('app-id:');
+    expect(release).toContain('app-id: ${{ vars.RELEASE_APP_ID }}');
+    expect(release).not.toContain('client-id:');
     expect(publishJob).toContain('environment: npm');
     expect(publishJob).toMatch(/permissions:\n\s+contents: read\n\s+id-token: write/);
     expect(release).toContain('package-manager-cache: false');

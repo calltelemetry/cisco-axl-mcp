@@ -144,6 +144,24 @@ describe('runAxl policy separation', () => {
     expect(fake.executeOperation).not.toHaveBeenCalled();
   });
 
+  it('rejects an unsupported CUCM version before loading schema artifacts', async () => {
+    const fake = service();
+
+    await expect(
+      runAxl(
+        {
+          request: request({
+            credentials: { ...request().credentials, version: '99.0' },
+          }),
+          source: 'mcp',
+          validationMode: 'strict',
+        },
+        { service: fake.api, packageVersion: PACKAGE_VERSION }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_UNSUPPORTED_VERSION' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
   it('rejects an object-valued operation without invoking coercion hooks', async () => {
     const fake = service();
     const toString = vi.fn(() => 'getPhone');
@@ -607,6 +625,45 @@ describe('mutation grant enforcement', () => {
       previewAxlMutation(
         { request: request(), source: 'mcp', validationMode: 'strict' },
         { service: fake.api, packageVersion: PACKAGE_VERSION, now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_NOT_REQUIRED' });
+    expect(fake.executeOperation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a preview cancelled after exact-version preparation', async () => {
+    let checks = 0;
+    const signal = {
+      get aborted() {
+        return checks++ > 0;
+      },
+    } as AbortSignal;
+
+    await expect(
+      previewAxlMutation(
+        { request: writeRequest, source: 'mcp', validationMode: 'strict', signal },
+        { packageVersion: PACKAGE_VERSION, now: () => NOW }
+      )
+    ).rejects.toMatchObject({ code: 'AXL_REQUEST_CANCELLED' });
+    expect(checks).toBe(2);
+  });
+
+  it('rejects a mutation grant supplied for a read operation', async () => {
+    const fake = service();
+
+    await expect(
+      runAxl(
+        {
+          request: request(),
+          source: 'mcp',
+          validationMode: 'strict',
+          mutationGrant: await grant(),
+        },
+        {
+          service: fake.api,
+          packageVersion: PACKAGE_VERSION,
+          now: () => NOW,
+          replayStore: new MutationGrantReplayStore(),
+        }
       )
     ).rejects.toMatchObject({ code: 'AXL_MUTATION_GRANT_NOT_REQUIRED' });
     expect(fake.executeOperation).not.toHaveBeenCalled();

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
   rmSync,
@@ -410,6 +410,25 @@ describe('recordOperation', () => {
     expect(persisted).not.toContain('secret123');
     expect(persisted).not.toContain('response-token');
     expect(persisted).toContain('***');
+  });
+
+  it('bounds and reports audit queue loss when the destination cannot be written', async () => {
+    const blockedPath = join(tempDir, 'blocked-destination');
+    writeFileSync(blockedPath, 'not a directory');
+    setAuditDir(blockedPath);
+    const diagnostics = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      for (let index = 0; index < 300; index++) {
+        recordOperation('blocked-host', 'getPhone', Date.now(), { ok: true });
+      }
+
+      await expect(flushAuditLog()).rejects.toThrow('Audit persistence incomplete');
+      expect(diagnostics.mock.calls.flat().join('')).toContain('audit_queue_dropped');
+      expect(diagnostics.mock.calls.flat().join('')).toContain('audit_write_failed');
+    } finally {
+      diagnostics.mockRestore();
+    }
   });
 
   it('retains dispatched-mutation policy classification when an oversized audit entry is compacted', async () => {

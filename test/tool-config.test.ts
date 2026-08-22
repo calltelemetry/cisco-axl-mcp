@@ -246,6 +246,30 @@ describe('getEnabledTopLevelObjects', () => {
     );
   });
 
+  it('rejects a non-object shared JSON configuration', () => {
+    process.env.AXL_MCP_CONFIG = '[]';
+
+    expect(() => loadMcpConfig()).toThrowError(
+      expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+    );
+  });
+
+  it.each(['0', '30.5'])('rejects a malformed JSON timeout value: %s', value => {
+    process.env.AXL_MCP_CONFIG = JSON.stringify({ request_timeout_ms: value });
+
+    expect(() => loadMcpConfig()).toThrowError(
+      expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+    );
+  });
+
+  it('rejects an unsupported JSON TLS mode', () => {
+    process.env.AXL_MCP_CONFIG = JSON.stringify({ tls_mode: 'legacy-insecure' });
+
+    expect(() => loadMcpConfig()).toThrowError(
+      expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+    );
+  });
+
   it.each([
     ['true', true],
     ['1', true],

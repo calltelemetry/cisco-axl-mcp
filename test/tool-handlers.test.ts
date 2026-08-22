@@ -343,6 +343,40 @@ describe('axl_execute edge cases', () => {
     });
   });
 
+  it('rejects an unsupported execution version before invoking the runner', async () => {
+    await expect(
+      handleTool(
+        'axl_execute',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '99.0',
+          operation: 'getPhone',
+          data: { name: 'SEP001122334455' },
+        },
+        mockApi
+      )
+    ).rejects.toThrow('Unsupported cucm_version "99.0"');
+  });
+
+  it('rejects an operation absent from the selected version catalog', async () => {
+    await expect(
+      handleTool(
+        'axl_execute',
+        {
+          cucm_host: 'test.local',
+          cucm_username: 'user',
+          cucm_password: 'pass',
+          cucm_version: '14.0',
+          operation: 'vendorRawOperationNotInGeneratedCatalog',
+          data: {},
+        },
+        mockApi
+      )
+    ).rejects.toMatchObject({ data: { policyCode: 'AXL_OPERATION_UNAVAILABLE' } });
+  });
+
   it('passes dataContainerIdentifierTails opt', async () => {
     const { api, calls } = createCapturingMock();
 
@@ -548,6 +582,52 @@ describe('axl_execute edge cases', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.request.data).toEqual({});
+  });
+});
+
+describe('axl_preview_mutation edge cases', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env.AXL_MCP_ENABLED_OBJECTS = 'Phone';
+    delete process.env.AXL_MCP_CONFIG;
+    delete process.env.AXL_MCP_ENABLE_SQL;
+    process.argv = ['node', 'script.js'];
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  const mutation = {
+    cucm_host: 'test.local',
+    cucm_username: 'user',
+    cucm_password: 'pass',
+    cucm_version: '14.0',
+    operation: 'updatePhone',
+    data: { name: 'SEP001122334455', description: 'approved' },
+  };
+
+  it('rejects an unsupported preview version before loading schema artifacts', async () => {
+    await expect(
+      handleTool('axl_preview_mutation', { ...mutation, cucm_version: '99.0' }, mockApi)
+    ).rejects.toThrow('Unsupported cucm_version "99.0"');
+  });
+
+  it('rejects SQL preview when the explicit SQL capability is disabled', async () => {
+    await expect(
+      handleTool(
+        'axl_preview_mutation',
+        { ...mutation, operation: 'executeSQLQuery', data: { sql: 'SELECT name FROM device' } },
+        mockApi
+      )
+    ).rejects.toMatchObject({ data: { policyCode: 'AXL_SQL_DISABLED' } });
+  });
+
+  it('fails closed when the runner cannot provide mutation preview', async () => {
+    await expect(handleTool('axl_preview_mutation', mutation, mockApi)).rejects.toMatchObject({
+      data: { policyCode: 'AXL_MUTATION_PREVIEW_UNAVAILABLE' },
+    });
   });
 });
 

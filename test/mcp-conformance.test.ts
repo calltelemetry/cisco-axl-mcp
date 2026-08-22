@@ -1,6 +1,6 @@
 import { ErrorCode, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { beforeAll, describe, it, expect, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTools, handleTool } from '../src/tools/index';
@@ -16,6 +16,7 @@ import {
   auditLogPathForHost,
   flushAuditLog,
   getAuditDir,
+  recordOperation,
   setAuditDir,
   writeAuditEntry,
 } from '../src/lib/audit-log';
@@ -948,6 +949,26 @@ describe('MCP Protocol Conformance', () => {
     expect(close).toHaveBeenCalledOnce();
     expect(process.listenerCount('SIGINT')).toBe(beforeInt);
     expect(process.listenerCount('SIGTERM')).toBe(beforeTerm);
+  });
+
+  it('reports an audit flush failure while still completing shutdown cleanup', async () => {
+    const originalAuditDir = getAuditDir();
+    const auditRoot = mkdtempSync(join(tmpdir(), 'axl-shutdown-audit-failure-'));
+    const blockedPath = join(auditRoot, 'blocked-destination');
+    writeFileSync(blockedPath, 'not a directory');
+    setAuditDir(blockedPath);
+    const diagnostics = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const server = new CiscoAxlMcpServer(testConfig());
+    recordOperation('audit-flush-failure.local', 'getPhone', Date.now(), { ok: true });
+
+    try {
+      await expect(server.shutdown()).rejects.toThrow('Shutdown incomplete');
+      expect(diagnostics.mock.calls.flat().join('')).toContain('audit_write_failed');
+    } finally {
+      diagnostics.mockRestore();
+      setAuditDir(originalAuditDir);
+      rmSync(auditRoot, { recursive: true, force: true });
+    }
   });
 
   it('routes signal shutdown success and failure to the corresponding process exit code', async () => {

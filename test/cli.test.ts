@@ -1086,13 +1086,18 @@ describe('CLI execution', () => {
     ).toBe(0);
     expect(cli.calls).toHaveLength(1);
     expect(cli.calls[0]!.mutationGrant).toMatchObject({
-      target: { host: 'cucm.example.test', version: '15.0' },
+      target: {
+        endpointDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        principalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        version: '15.0',
+      },
       operation: 'updatePhone',
       packageVersion: expect.any(String),
       schemaDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       requestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       provenance: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+    expect(JSON.stringify(cli.calls[0]!.mutationGrant)).not.toContain('cucm.example.test');
   });
 
   it('signs CLI grants with the same injected authority used by the strict runner', async () => {
@@ -1122,24 +1127,48 @@ describe('CLI execution', () => {
     ).toBe(0);
   });
 
-  it('adapts SQL query files to executeSQLQuery', async () => {
+  it('requires confirmation before adapting SQL query files to executeSQLQuery', async () => {
     const cli = harness({ readFile: async () => Buffer.from('select name from device') });
 
-    expect(await runCli(['sql', 'query', '--file', 'query.sql'], cli.dependencies)).toBe(0);
+    expect(await runCli(['sql', 'query', '--file', 'query.sql'], cli.dependencies)).toBe(5);
+    expect(cli.calls).toHaveLength(0);
+
+    expect(
+      await runCli(
+        ['sql', 'query', '--file', 'query.sql', '--write', '--confirm', 'sql-query'],
+        cli.dependencies
+      )
+    ).toBe(0);
     expect(cli.calls[0]).toMatchObject({
       source: 'cli',
       validationMode: 'strict',
       request: { operation: 'executeSQLQuery', data: { sql: 'select name from device' } },
     });
-    expect(cli.calls[0]!.mutationGrant).toBeUndefined();
+    expect(cli.calls[0]!.mutationGrant).toMatchObject({ operation: 'executeSQLQuery' });
   });
 
-  it('dispatches executeSQLQueryInactive as read-only without mutation flags or a grant', async () => {
+  it('requires confirmation and a grant for executeSQLQueryInactive', async () => {
     const cli = harness();
 
     expect(
       await runCli(
         ['execute', 'executeSQLQueryInactive', '--data', '{"sql":"select name from device"}'],
+        cli.dependencies
+      )
+    ).toBe(5);
+    expect(cli.calls).toHaveLength(0);
+
+    expect(
+      await runCli(
+        [
+          'execute',
+          'executeSQLQueryInactive',
+          '--data',
+          '{"sql":"select name from device"}',
+          '--write',
+          '--confirm',
+          'executeSQLQueryInactive',
+        ],
         cli.dependencies
       )
     ).toBe(0);
@@ -1151,7 +1180,7 @@ describe('CLI execution', () => {
         data: { sql: 'select name from device' },
       },
     });
-    expect(cli.calls[0]!.mutationGrant).toBeUndefined();
+    expect(cli.calls[0]!.mutationGrant).toMatchObject({ operation: 'executeSQLQueryInactive' });
   });
 
   it('requires SQL update confirmation and dispatches with a mutation grant', async () => {

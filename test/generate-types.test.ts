@@ -13,11 +13,13 @@ import * as operationSchemas from '../src/types/generated/axl-operation-schemas'
 import * as operationClassification from '../src/types/generated/axl-operation-classification';
 import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 
-const EXPECTED_VERSIONS = ['11.0', '11.5', '12.0', '12.5', '14.0', '15.0'];
+const EXPECTED_VERSIONS = ['11.0', '11.5', '12.0', '12.5', '14.0', '15.0'] as const;
+type ExpectedVersion = (typeof EXPECTED_VERSIONS)[number];
 const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
 const GENERATED_FILES = [
   'generated/axl-top-level-objects.json',
   'src/types/generated/axl-generated-types.ts',
+  'src/types/generated/axl-known-top-level-objects.ts',
   'src/types/generated/axl-latest.ts',
   'src/types/generated/axl-objects.ts',
   'src/types/generated/axl-operation-classification.ts',
@@ -74,7 +76,7 @@ async function listGeneratedFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-function readGolden(version: '11.5' | '15.0'): unknown {
+function readGolden(version: ExpectedVersion): unknown {
   return JSON.parse(
     readFileSync(
       new URL(`fixtures/generator/${version}/schema-golden.json`, import.meta.url),
@@ -98,7 +100,7 @@ function pickField(field: any): Record<string, unknown> {
   );
 }
 
-function actualGolden(version: '11.5' | '15.0'): unknown {
+function actualGolden(version: ExpectedVersion): unknown {
   const byOperation = schemas.AXL_OPERATION_SCHEMAS_BY_VERSION?.[version];
   const getCallManager = byOperation?.getCallManager;
   const addPhone = byOperation?.addPhone;
@@ -272,23 +274,60 @@ describe('generated AXL version contract', () => {
     );
 
     for (const version of EXPECTED_VERSIONS) {
+      const versionSchemas = schemas.AXL_OPERATION_SCHEMAS_BY_VERSION?.[version] ?? {};
+      const objectOperations = objects.AXL_OBJECT_OPERATIONS_BY_VERSION?.[version] ?? {};
+      const actionOperations = objects.AXL_ACTION_OPERATIONS_BY_VERSION?.[version] ?? {};
+      const getCallManager = versionSchemas.getCallManager;
+      const deviceReset = versionSchemas.doDeviceReset;
+
       expect(support.OPERATIONS_BY_VERSION?.[version]).toEqual(
         [...(support.OPERATIONS_BY_VERSION?.[version] ?? [])].sort()
       );
       expect(support.OPERATIONS_BY_VERSION?.[version]).toEqual(
         expect.arrayContaining(CATALOG_OPERATIONS)
       );
-      expect(Object.keys(schemas.AXL_OPERATION_SCHEMAS_BY_VERSION?.[version] ?? {}).sort()).toEqual(
-        support.OPERATIONS_BY_VERSION?.[version]
-      );
+      expect(Object.keys(versionSchemas).sort()).toEqual(support.OPERATIONS_BY_VERSION?.[version]);
       expect(
         Object.keys(schemas.AXL_OPERATION_METADATA_BY_VERSION?.[version] ?? {}).sort()
       ).toEqual(support.OPERATIONS_BY_VERSION?.[version]);
-      expect(schemas.AXL_OPERATION_SCHEMAS_BY_VERSION?.[version]).toHaveProperty(
-        'executeSQLQuery.kind',
-        'other'
+      expect(versionSchemas).toHaveProperty('executeSQLQuery.kind', 'other');
+      expect(actionOperations).toHaveProperty('doDeviceReset');
+      expect(getCallManager).toMatchObject({
+        verb: 'get',
+        object: 'CallManager',
+        choices: [{ minOccurs: 1, maxOccurs: 1, options: [['name'], ['uuid']] }],
+        fields: {
+          name: { minOccurs: 1, maxOccurs: 1, choice: 0 },
+          uuid: { minOccurs: 1, maxOccurs: 1, choice: 0 },
+        },
+      });
+      expect(deviceReset).toMatchObject({
+        verb: 'do',
+        kind: 'action',
+        fields: {
+          deviceName: { required: true, minOccurs: 1 },
+          isHardReset: { choice: 0 },
+          deviceResetType: { choice: 0 },
+        },
+        choices: [{ options: [['isHardReset'], ['deviceResetType']] }],
+      });
+      expect(classification.AXL_READ_ONLY_OPERATIONS_BY_VERSION?.[version]).not.toContain(
+        'doDeviceReset'
       );
-      expect(objects.AXL_ACTION_OPERATIONS_BY_VERSION?.[version]).toHaveProperty('doDeviceReset');
+
+      for (const [object, verbs] of Object.entries(objectOperations)) {
+        for (const [verb, operation] of Object.entries(verbs)) {
+          expect(versionSchemas[operation]).toMatchObject({ verb, object });
+        }
+      }
+      for (const [operation, action] of Object.entries(actionOperations)) {
+        const actionInfo = action as { verb?: string; object?: string | null };
+        expect(versionSchemas[operation]).toMatchObject({
+          verb: actionInfo.verb,
+          kind: 'action',
+          object: actionInfo.object ?? '',
+        });
+      }
       expect(classification.AXL_READ_ONLY_OPERATIONS_BY_VERSION?.[version]).toEqual(
         Object.entries(schemas.AXL_OPERATION_METADATA_BY_VERSION?.[version] ?? {})
           .filter(([operation, metadata]) => {
@@ -305,15 +344,17 @@ describe('generated AXL version contract', () => {
     }
   });
 
-  it.each(['11.5', '15.0'] as const)(
+  it.each(EXPECTED_VERSIONS)(
     'matches the %s schema golden for choices, arrays, nillability, enums, and opaque content',
     version => {
       expect(actualGolden(version)).toEqual(readGolden(version));
     }
   );
 
-  it.each(['11.5', '15.0'] as const)('loads the %s payload independently', async version => {
-    const artifacts = await loadAxlVersionArtifacts(version);
+  it.each(EXPECTED_VERSIONS)('loads the %s payload independently', async version => {
+    const pendingArtifacts = loadAxlVersionArtifacts(version);
+    expect(loadAxlVersionArtifacts(version)).toBe(pendingArtifacts);
+    const artifacts = await pendingArtifacts;
     expect(artifacts.version).toBe(version);
     expect(artifacts.operationSchemas.getCallManager).toBeDefined();
     expect(artifacts.operationSchemaDigest).toBe(
@@ -334,7 +375,7 @@ describe('generated AXL version contract', () => {
     expect(broken).toEqual(['synthetic choice 0 -> name']);
   });
 
-  it.each(['11.5', '15.0'] as const)(
+  it.each(EXPECTED_VERSIONS)(
     'keeps every %s nested choice membership linked to its declaring group',
     version => {
       const broken: string[] = [];

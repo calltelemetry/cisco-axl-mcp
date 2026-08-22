@@ -17,7 +17,9 @@ afterEach(() => {
 });
 
 function makePhones(count: number, offset = 0): Record<string, unknown>[] {
-  return Array.from({ length: count }, (_, i) => ({ name: `SEP${String(i + offset).padStart(12, '0')}` }));
+  return Array.from({ length: count }, (_, i) => ({
+    name: `SEP${String(i + offset).padStart(12, '0')}`,
+  }));
 }
 
 describe('AxlAPIService.listAll', () => {
@@ -29,7 +31,7 @@ describe('AxlAPIService.listAll', () => {
     const result = await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      { searchCriteria: { name: '%' } },
+      { searchCriteria: { name: '%' } }
     );
 
     expect(result.rows).toHaveLength(5);
@@ -52,7 +54,7 @@ describe('AxlAPIService.listAll', () => {
     const result = await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      { searchCriteria: { name: '%' } },
+      { searchCriteria: { name: '%' } }
     );
 
     expect(result.rows).toHaveLength(1050);
@@ -73,7 +75,7 @@ describe('AxlAPIService.listAll', () => {
     const result = await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      { searchCriteria: { name: '%' } },
+      { searchCriteria: { name: '%' } }
     );
 
     expect(result.truncated).toBe(true);
@@ -84,17 +86,19 @@ describe('AxlAPIService.listAll', () => {
 
   it('passes skip and first in page data', async () => {
     const calls: Record<string, unknown>[] = [];
-    const mockExecute = vi.fn().mockImplementation(async (_creds: unknown, _op: unknown, data: unknown) => {
-      calls.push(data as Record<string, unknown>);
-      return { return: { phone: makePhones(10) } }; // Less than page size = last page
-    });
+    const mockExecute = vi
+      .fn()
+      .mockImplementation(async (_creds: unknown, _op: unknown, data: unknown) => {
+        calls.push(data as Record<string, unknown>);
+        return { return: { phone: makePhones(10) } }; // Less than page size = last page
+      });
     const service = new AxlAPIService();
     service.executeOperation = mockExecute;
 
     await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      { searchCriteria: { name: '%' } },
+      { searchCriteria: { name: '%' } }
     );
 
     expect(calls[0]).toMatchObject({ skip: '0', first: '1000', searchCriteria: { name: '%' } });
@@ -108,7 +112,7 @@ describe('AxlAPIService.listAll', () => {
     const result = await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      {},
+      {}
     );
 
     expect(result.rows).toHaveLength(0);
@@ -118,7 +122,12 @@ describe('AxlAPIService.listAll', () => {
 
   it('handles SQL-style row results', async () => {
     const mockExecute = vi.fn().mockResolvedValue({
-      return: { row: [{ pkid: '1', name: 'phone1' }, { pkid: '2', name: 'phone2' }] },
+      return: {
+        row: [
+          { pkid: '1', name: 'phone1' },
+          { pkid: '2', name: 'phone2' },
+        ],
+      },
     });
     const service = new AxlAPIService();
     service.executeOperation = mockExecute;
@@ -126,7 +135,7 @@ describe('AxlAPIService.listAll', () => {
     const result = await service.listAll(
       { host: 'test', username: 'u', password: 'p', version: '14.0' },
       'listPhone',
-      {},
+      {}
     );
 
     expect(result.rows).toHaveLength(2);

@@ -22,7 +22,6 @@ import { isSupportedCucmVersion } from './lib/version-manager';
 import { loadAxlVersionArtifacts } from './types/generated/axl-version-loader';
 import { WSDL_VERSIONS, type WsdlVersion } from './types/generated/wsdl-support';
 import type { AxlVersionArtifacts } from './types/generated/axl-generated-types';
-import { isDirectExecution } from './lib/entrypoint';
 
 interface CliWritable {
   write(value: string): unknown;
@@ -90,7 +89,8 @@ function cliCredentials(
         cucm_host: command.host,
         cucm_version: command.version,
       },
-      env
+      env,
+      { allowInlineCredentials: true }
     );
   } catch (error) {
     if (error instanceof CredentialResolutionError) {
@@ -205,14 +205,14 @@ export async function runCli(
   argv: readonly string[] = process.argv.slice(2),
   dependencies: CliDependencies = {}
 ): Promise<CliExitCode> {
-  const env = dependencies.env ?? process.env;
   const stdout = dependencies.stdout ?? process.stdout;
   const stderr = dependencies.stderr ?? process.stderr;
+  const packageVersion = dependencies.packageVersion ?? AXL_RUNNER_PACKAGE_VERSION;
+  const env = dependencies.env ?? process.env;
   const readStdin = dependencies.readStdin ?? readProcessStdin;
   const readFile = dependencies.readFile ?? defaultReadFile;
   const runner = dependencies.runAxl ?? defaultRunAxl;
   const now = dependencies.now ?? Date.now;
-  const packageVersion = dependencies.packageVersion ?? AXL_RUNNER_PACKAGE_VERSION;
   let meta: Record<string, unknown> | undefined;
 
   try {
@@ -287,7 +287,7 @@ export async function runCli(
           artifacts,
           operation,
           data: { sql },
-          expectedConfirmation: 'sql-update',
+          expectedConfirmation: command.action === 'query' ? 'sql-query' : 'sql-update',
           env,
           runAxl: runner,
           now,
@@ -308,10 +308,4 @@ export async function runCli(
     stderr.write(`${failure.diagnostic}\n`);
     return failure.exitCode;
   }
-}
-
-if (isDirectExecution(import.meta.url)) {
-  void runCli().then(exitCode => {
-    process.exitCode = exitCode;
-  });
 }

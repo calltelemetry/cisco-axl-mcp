@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version-file: .nvmrc
 
       - name: Enable Corepack
         run: corepack enable
@@ -26,23 +26,11 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
-      - name: Typecheck
-        run: yarn typecheck
-
-      - name: Lint
-        run: yarn lint --max-warnings=50
-
-      - name: Test with coverage
-        run: yarn vitest run --coverage
+      - name: Validate
+        run: yarn validate
 
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Build
-        run: yarn build
-
-      - name: Verify installed package
-        run: yarn package:smoke

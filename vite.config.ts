@@ -1,9 +1,12 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
-import { builtinModules } from 'module';
-import { readFileSync } from 'fs';
+import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const packageMetadata = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as {
+const projectRoot = dirname(fileURLToPath(import.meta.url));
+
+const packageMetadata = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf8')) as {
   dependencies: Record<string, string>;
 };
 const packageDependencies = Object.keys(packageMetadata.dependencies);
@@ -16,12 +19,12 @@ function isExternal(id: string): boolean {
   );
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   build: {
     lib: {
       entry: {
-        index: resolve(__dirname, 'src/index.ts'),
-        cli: resolve(__dirname, 'src/cli.ts'),
+        index: resolve(projectRoot, 'src/bin/mcp.ts'),
+        cli: resolve(projectRoot, 'src/bin/cli.ts'),
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,
@@ -34,7 +37,8 @@ export default defineConfig({
       },
     },
     target: 'node18',
-    sourcemap: true,
+    // Development maps stay local; release packs contain executable runtime code only.
+    sourcemap: mode === 'development',
     outDir: 'build',
   },
-});
+}));

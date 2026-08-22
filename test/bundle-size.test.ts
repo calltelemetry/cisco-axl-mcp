@@ -2,7 +2,7 @@ import { build } from 'vite';
 import { describe, expect, it } from 'vitest';
 
 describe('MCP runtime bundle', () => {
-  it('retains only the latest generated AXL version payload', async () => {
+  it('loads generated AXL version payloads only through lazy version chunks', async () => {
     const result = await build({
       configFile: new URL('../vite.config.ts', import.meta.url).pathname,
       logLevel: 'silent',
@@ -36,7 +36,12 @@ describe('MCP runtime bundle', () => {
       .map(moduleId => moduleId.split('/').at(-1));
     const mcpRuntimeCode = [...mcpRuntimeChunks].map(chunk => chunk.code).join('\n');
 
-    expect(bundledVersionModules).toEqual(['axl-version-15-0.ts']);
+    expect(bundledVersionModules).toEqual([]);
+    expect(
+      chunks
+        .flatMap(chunk => Object.keys(chunk.modules))
+        .filter(moduleId => moduleId.includes('/types/generated/versions/axl-version-'))
+    ).toHaveLength(6);
     expect(mcpRuntimeCode).not.toContain('Cisco CTL Provider');
     expect(Buffer.byteLength(mcpRuntimeCode)).toBeLessThan(10_000_000);
   }, 120_000);

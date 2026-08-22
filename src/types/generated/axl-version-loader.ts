@@ -13,6 +13,13 @@ export const AXL_VERSION_LOADERS: Record<WsdlVersion, () => Promise<AxlVersionAr
   "15.0": () => import('./versions/axl-version-15-0').then(module => module.AXL_VERSION_ARTIFACTS),
 };
 
+const axlVersionArtifactCache = new Map<WsdlVersion, Promise<AxlVersionArtifacts>>();
+
 export function loadAxlVersionArtifacts(version: WsdlVersion): Promise<AxlVersionArtifacts> {
-  return AXL_VERSION_LOADERS[version]();
+  let pending = axlVersionArtifactCache.get(version);
+  if (!pending) {
+    pending = AXL_VERSION_LOADERS[version]();
+    axlVersionArtifactCache.set(version, pending);
+  }
+  return pending;
 }

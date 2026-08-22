@@ -1,18 +1,14 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { redactCredentials } from '../../lib/audit-log';
+import { AxlPolicyError } from '../../lib/policy-error';
 
-export class AxlPolicyError extends Error {
-  constructor(
-    public readonly code: string,
-    message: string
-  ) {
-    super(message);
-    this.name = 'AxlPolicyError';
-  }
-}
+export { AxlPolicyError } from '../../lib/policy-error';
 
 export function toMcpError(error: unknown): McpError {
   if (error instanceof McpError) return error;
+  if (error instanceof AxlPolicyError) {
+    return new McpError(ErrorCode.InvalidParams, error.message, { policyCode: error.code });
+  }
   const redacted = redactCredentials(error);
   const message =
     redacted &&

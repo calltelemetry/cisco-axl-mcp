@@ -1,12 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { handleTool } from '../src/tools/index';
-import type { AxlAPIService } from '../src/services/axl/index';
+import type { AxlRunner } from '../src/tools/types';
+import { loadMcpConfig } from '../src/lib/tool-config';
 import { AXL_OBJECT_OPERATIONS } from '../src/types/generated/axl-objects';
 import { AXL_OPERATION_SCHEMAS } from '../src/types/generated/axl-operation-schemas';
 
-const mockApi: AxlAPIService = {
-  executeOperation: async () => ({ ok: true }),
-} as unknown as AxlAPIService;
+const mockRunner: AxlRunner = { runAxl: async () => ({ ok: true }) };
+const allObjectsConfig = loadMcpConfig({ AXL_MCP_ENABLED_OBJECTS: 'all' }, ['node', 'test']);
+
+function describeOperation(args: unknown) {
+  return handleTool(
+    'axl_describe_operation',
+    { cucm_version: '15.0', ...(args as Record<string, unknown>) },
+    mockRunner,
+    allObjectsConfig
+  );
+}
 
 function parseResult(result: any): any {
   return JSON.parse(result.content[0].text);
@@ -14,7 +23,7 @@ function parseResult(result: any): any {
 
 describe('axl_describe_operation', () => {
   it('returns schema for addPhone with optional sequence semantics', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'addPhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'addPhone' });
     const data = parseResult(result);
 
     expect(data.operationName).toBe('addPhone');
@@ -50,7 +59,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('addPhone includes enum values for protocol', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'addPhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'addPhone' });
     const data = parseResult(result);
     const phoneFields = data.fields.phone.fields;
 
@@ -64,7 +73,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('addPhone includes default values', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'addPhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'addPhone' });
     const data = parseResult(result);
     const phoneFields = data.fields.phone.fields;
 
@@ -73,7 +82,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('returns schema for getPhone with name/uuid', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'getPhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'getPhone' });
     const data = parseResult(result);
 
     expect(data.verb).toBe('get');
@@ -84,7 +93,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('returns schema for listPhone with searchCriteria', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'listPhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'listPhone' });
     const data = parseResult(result);
 
     expect(data.verb).toBe('list');
@@ -97,7 +106,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('returns schema for removePhone', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'removePhone' }, mockApi);
+    const result = await describeOperation({ operationName: 'removePhone' });
     const data = parseResult(result);
 
     expect(data.verb).toBe('remove');
@@ -107,7 +116,7 @@ describe('axl_describe_operation', () => {
   });
 
   it('returns schema for addUser with optional sequence semantics', async () => {
-    const result = await handleTool('axl_describe_operation', { operationName: 'addUser' }, mockApi);
+    const result = await describeOperation({ operationName: 'addUser' });
     const data = parseResult(result);
 
     expect(data.verb).toBe('add');
@@ -126,21 +135,43 @@ describe('axl_describe_operation', () => {
   });
 
   it('throws for unknown operation', async () => {
+    await expect(describeOperation({ operationName: 'fakeOperation' })).rejects.toThrow(
+      'No schema for "fakeOperation"'
+    );
+  });
+
+  it('uses the requested CUCM version instead of the latest artifact', async () => {
     await expect(
-      handleTool('axl_describe_operation', { operationName: 'fakeOperation' }, mockApi)
-    ).rejects.toThrow('No schema for "fakeOperation"');
+      handleTool(
+        'axl_describe_operation',
+        { cucm_version: '11.0', operationName: 'getCustomer' },
+        mockRunner,
+        allObjectsConfig
+      )
+    ).rejects.toThrow('No schema for "getCustomer"');
+
+    const result = await handleTool(
+      'axl_describe_operation',
+      { cucm_version: '15.0', operationName: 'getCustomer' },
+      mockRunner,
+      allObjectsConfig
+    );
+    const data = parseResult(result);
+
+    expect(data.wsdlVersion).toBe('15.0');
+    expect(data.operationName).toBe('getCustomer');
   });
 
   it('throws when operation is missing', async () => {
-    await expect(
-      handleTool('axl_describe_operation', {}, mockApi)
-    ).rejects.toThrow();
+    await expect(describeOperation({})).rejects.toThrow();
   });
 
   it('all mapped operations have schema entries', () => {
     const missing: string[] = [];
     let total = 0;
-    for (const [, ops] of Object.entries(AXL_OBJECT_OPERATIONS) as Array<[string, Record<string, string>]>) {
+    for (const [, ops] of Object.entries(AXL_OBJECT_OPERATIONS) as Array<
+      [string, Record<string, string>]
+    >) {
       for (const [, opName] of Object.entries(ops)) {
         total++;
         if (!AXL_OPERATION_SCHEMAS[opName]) missing.push(opName);
@@ -151,7 +182,9 @@ describe('axl_describe_operation', () => {
   });
 
   it('schemas have correct verb and object', () => {
-    for (const [objectName, ops] of Object.entries(AXL_OBJECT_OPERATIONS) as Array<[string, Record<string, string>]>) {
+    for (const [objectName, ops] of Object.entries(AXL_OBJECT_OPERATIONS) as Array<
+      [string, Record<string, string>]
+    >) {
       for (const [verb, opName] of Object.entries(ops)) {
         const schema = AXL_OPERATION_SCHEMAS[opName];
         if (!schema) continue;

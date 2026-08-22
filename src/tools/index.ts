@@ -1,43 +1,60 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { AxlAPIService } from '../services/axl/index';
-import type { ToolDefinition } from './types';
+import type { ToolDefinition, AxlRunner } from './types';
 import { jsonResponse } from './types';
 import { resolveCredentials } from '../lib/credential-resolver';
-import { getEnabledTopLevelObjects, isSqlEnabled } from '../lib/tool-config';
+import { loadMcpConfig, type ResolvedMcpConfig } from '../lib/tool-config';
 import { toMcpError } from '../types/axl/errors';
 import {
   assertRecord,
+  assertInlineCredentialPolicy,
   extractCredentialOverrides,
   optionalObject,
   requireString,
 } from '../types/axl/guards';
-import {
-  AXL_ACTION_OPERATIONS,
-  AXL_OBJECT_OPERATIONS,
-  AXL_OBJECTS_SOURCE_WSDL_VERSION,
-  AXL_OPERATION_SCHEMAS,
-  AXL_SCHEMAS_SOURCE_VERSION,
-  AXL_TOP_LEVEL_OBJECTS,
-  type AxlTopLevelObject,
-} from '../types/generated/axl-latest';
+import { loadAxlVersionArtifacts } from '../types/generated/axl-version-loader';
+import type { AxlVersionArtifacts } from '../types/generated/axl-generated-types';
+import { isSupportedCucmVersion, type SupportedCucmVersion } from '../lib/version-manager';
 import type { ExecuteOperationOptions } from '../lib/axl-client';
+import type { MutationGrant } from '../lib/mutation-grants';
+import { AxlPolicyError } from '../types/axl/errors';
+import { hasAuthorizedObjectMutation } from '../lib/operation-classification-core';
 
-const OPERATION_TO_OBJECT = (() => {
-  const map = new Map<string, AxlTopLevelObject>();
-  for (const [objectName, verbs] of Object.entries(AXL_OBJECT_OPERATIONS) as Array<
-    [AxlTopLevelObject, Record<string, string>]
-  >) {
-    for (const operation of Object.values(verbs)) map.set(operation, objectName);
+interface DiscoveryArtifacts {
+  artifacts: AxlVersionArtifacts;
+}
+
+const discoveryArtifactsCache = new Map<SupportedCucmVersion, Promise<DiscoveryArtifacts>>();
+
+async function loadDiscoveryArtifacts(version: SupportedCucmVersion): Promise<DiscoveryArtifacts> {
+  let pending = discoveryArtifactsCache.get(version);
+  if (!pending) {
+    pending = loadAxlVersionArtifacts(version).then(artifacts => {
+      return {
+        artifacts,
+      };
+    });
+    discoveryArtifactsCache.set(version, pending);
   }
-  return map;
-})();
+  return pending;
+}
 
-/** Set of global action operation names that have no specific top-level object (e.g. doDeviceReset, doLdapSync). */
-const GLOBAL_ACTION_OPERATIONS = new Set<string>(
-  Object.entries(AXL_ACTION_OPERATIONS)
-    .filter(([, info]) => info.object === null)
-    .map(([op]) => op)
-);
+function resolveDiscoveryVersion(args: Record<string, unknown>): SupportedCucmVersion {
+  const requested = args.cucm_version ?? process.env.CUCM_VERSION;
+  if (typeof requested !== 'string' || requested.length === 0) {
+    throw new McpError(ErrorCode.InvalidParams, 'Missing CUCM_VERSION or cucm_version');
+  }
+  if (!isSupportedCucmVersion(requested)) {
+    throw new McpError(ErrorCode.InvalidParams, `Unsupported cucm_version "${requested}"`);
+  }
+  return requested;
+}
+
+const DISCOVERY_VERSION_INPUT = {
+  cucm_version: {
+    type: 'string',
+    description: 'CUCM AXL schema version to inspect. Defaults to configured CUCM_VERSION.',
+  },
+};
 
 /** Convert ["name", "lines.line.dirn.pattern"] to { name: true, lines: { line: { dirn: { pattern: true } } } } */
 export function buildReturnedTags(fields: string[]): Record<string, unknown> {
@@ -76,9 +93,6 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        cucm_host: { type: 'string' },
-        cucm_username: { type: 'string' },
-        cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
         operation: {
           type: 'string',
@@ -104,6 +118,35 @@ export const tools: ToolDefinition[] = [
           description:
             'Auto-paginate list operations. Fetches all pages and returns combined results. Max 10,000 rows. Only valid for list* operations.',
         },
+        mutationGrant: {
+          type: 'object',
+          description:
+            'Single-use, request-bound mutation authorization returned by a prior approved preview.',
+        },
+      },
+      required: ['operation', 'data'],
+    },
+  },
+  {
+    name: 'axl_preview_mutation',
+    description:
+      'Validate and preview one authorized AXL mutation without contacting CUCM. Returns a short-lived, single-use grant bound to this exact request. The MCP client must obtain and record explicit human approval before using that grant; this tool does not verify a human identity or approve the change itself.',
+    annotations: {
+      title: 'Preview AXL Mutation',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cucm_version: { type: 'string' },
+        operation: { type: 'string', description: 'Authorized mutation operation name.' },
+        data: { type: 'object', description: 'Exact JSON payload to authorize.' },
+        returnedTags: { type: 'array', items: { type: 'string' } },
+        opts: { type: 'object', description: 'Exact executeOperation options to authorize.' },
+        autoPage: { type: 'boolean' },
       },
       required: ['operation', 'data'],
     },
@@ -120,7 +163,7 @@ export const tools: ToolDefinition[] = [
     },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: DISCOVERY_VERSION_INPUT,
     },
   },
   {
@@ -137,6 +180,7 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        ...DISCOVERY_VERSION_INPUT,
         objectName: {
           type: 'string',
           description: 'Top-level object name (e.g. Phone, User, LineGroup)',
@@ -159,6 +203,7 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        ...DISCOVERY_VERSION_INPUT,
         operationName: {
           type: 'string',
           description:
@@ -182,6 +227,7 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        ...DISCOVERY_VERSION_INPUT,
         objectName: {
           type: 'string',
           description:
@@ -198,27 +244,29 @@ export const tools: ToolDefinition[] = [
   {
     name: 'axl_sql_query',
     description:
-      'Execute a read-only SQL query against the CUCM Informix database via AXL executeSQLQuery',
+      'Execute a conservatively screened SQL SELECT against CUCM Informix via AXL executeSQLQuery. A mutation grant is required because view and routine side effects cannot be proven absent.',
     annotations: {
       title: 'AXL SQL Query',
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
       openWorldHint: true,
     },
     inputSchema: {
       type: 'object',
       properties: {
-        cucm_host: { type: 'string' },
-        cucm_username: { type: 'string' },
-        cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
         sql: {
           type: 'string',
           description: 'SQL SELECT query to execute against the CUCM Informix database',
         },
+        mutationGrant: {
+          type: 'object',
+          description:
+            'Required single-use, request-bound mutation authorization returned by axl_preview_mutation after explicit client-side human approval.',
+        },
       },
-      required: ['sql'],
+      required: ['sql', 'mutationGrant'],
     },
   },
   {
@@ -235,79 +283,225 @@ export const tools: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        cucm_host: { type: 'string' },
-        cucm_username: { type: 'string' },
-        cucm_password: { type: 'string' },
         cucm_version: { type: 'string' },
         sql: {
           type: 'string',
           description:
             'SQL INSERT, UPDATE, or DELETE statement to execute against the CUCM Informix database',
         },
+        mutationGrant: {
+          type: 'object',
+          description: 'Single-use, request-bound mutation authorization required for SQL updates.',
+        },
       },
-      required: ['sql'],
+      required: ['sql', 'mutationGrant'],
     },
   },
 ];
 
-export function getTools(): ToolDefinition[] {
-  return tools;
+const SQL_TOOL_NAMES = new Set(['axl_sql_query', 'axl_sql_update']);
+const EXECUTION_TOOL_NAMES = new Set([
+  'axl_execute',
+  'axl_preview_mutation',
+  'axl_sql_query',
+  'axl_sql_update',
+]);
+const MCP_TOOL_NAMES = new Set(tools.map(tool => tool.name));
+
+const INLINE_CREDENTIAL_INPUTS = {
+  cucm_host: { type: 'string', description: 'Compatibility-only CUCM hostname override' },
+  cucm_username: { type: 'string', description: 'Compatibility-only CUCM username override' },
+  cucm_password: { type: 'string', description: 'Compatibility-only CUCM password override' },
+};
+
+function withInlineCredentialInputs(tool: ToolDefinition): ToolDefinition {
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...INLINE_CREDENTIAL_INPUTS,
+        ...tool.inputSchema.properties,
+      },
+    },
+  };
 }
 
-export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIService) {
+export function getTools(config: ResolvedMcpConfig = loadMcpConfig()): ToolDefinition[] {
+  const sqlVisibleTools = config.sqlEnabled
+    ? tools
+    : tools.filter(tool => !SQL_TOOL_NAMES.has(tool.name));
+  const canPreviewMutation =
+    config.sqlEnabled ||
+    config.allowGlobalActions ||
+    config.enabledObjects === null ||
+    hasAuthorizedObjectMutation(config.enabledObjects);
+  const visibleTools = canPreviewMutation
+    ? sqlVisibleTools
+    : sqlVisibleTools.filter(tool => tool.name !== 'axl_preview_mutation');
+  return config.allowInlineCredentials
+    ? visibleTools.map(tool =>
+        EXECUTION_TOOL_NAMES.has(tool.name) ? withInlineCredentialInputs(tool) : tool
+      )
+    : visibleTools;
+}
+
+/**
+ * The exact-version artifact is the single source of truth for whether an
+ * operation belongs to an object, is a global action, or is available at all.
+ * Callers use this before every discovery or execution response so no path can
+ * disclose an operation it would later reject.
+ */
+export function authorizeOperation(
+  operation: string,
+  artifacts: AxlVersionArtifacts,
+  config: ResolvedMcpConfig
+): void {
+  const metadata = artifacts.operationMetadata[operation];
+  if (!metadata) {
+    throw new AxlPolicyError(
+      'AXL_OPERATION_UNAVAILABLE',
+      `Operation "${operation}" is unavailable for CUCM ${artifacts.version}`
+    );
+  }
+
+  if (metadata.object) {
+    if (config.enabledObjects === null || config.enabledObjects.has(metadata.object)) return;
+    throw new AxlPolicyError(
+      'AXL_OBJECT_DENIED',
+      `Operation "${operation}" targets "${metadata.object}" which is not enabled`
+    );
+  }
+
+  if (metadata.kind === 'action') {
+    if (config.allowGlobalActions) return;
+    throw new AxlPolicyError(
+      'AXL_GLOBAL_ACTION_DENIED',
+      `Global action "${operation}" requires AXL_MCP_ALLOW_GLOBAL_ACTIONS=true`
+    );
+  }
+
+  // Object-less operations are not a public generic-execution escape hatch.
+  // SQL has dedicated tools and is authorized by its own explicit capability.
+  throw new AxlPolicyError(
+    'AXL_OPERATION_UNAVAILABLE',
+    `Operation "${operation}" is unavailable through axl_execute`
+  );
+}
+
+function isAuthorizedOperation(
+  operation: string,
+  artifacts: AxlVersionArtifacts,
+  config: ResolvedMcpConfig
+): boolean {
   try {
+    authorizeOperation(operation, artifacts, config);
+    return true;
+  } catch (error) {
+    if (error instanceof AxlPolicyError) return false;
+    throw error;
+  }
+}
+
+function requireAuthorizedObjectOperations(
+  objectName: string,
+  artifacts: AxlVersionArtifacts,
+  config: ResolvedMcpConfig
+): Record<string, string> {
+  const ops = artifacts.objectOperations[objectName];
+  if (!ops) {
+    throw new AxlPolicyError(
+      'AXL_OPERATION_UNAVAILABLE',
+      `Unknown objectName "${objectName}" for CUCM ${artifacts.version}`
+    );
+  }
+  if (config.enabledObjects !== null && !config.enabledObjects.has(objectName)) {
+    throw new AxlPolicyError('AXL_OBJECT_DENIED', `Object "${objectName}" is not enabled`);
+  }
+  const operationNames = Object.values(ops);
+  if (operationNames.length === 0) {
+    throw new AxlPolicyError(
+      'AXL_OPERATION_UNAVAILABLE',
+      `Object "${objectName}" has no available operations for CUCM ${artifacts.version}`
+    );
+  }
+  for (const operation of operationNames) authorizeOperation(operation, artifacts, config);
+  return ops;
+}
+
+function mutationGrantFromArgs(args: Record<string, unknown>): MutationGrant | undefined {
+  const grant = args.mutationGrant ?? args.mutation_grant;
+  return grant === undefined ? undefined : (grant as MutationGrant);
+}
+
+export async function handleTool(
+  name: string,
+  args: unknown,
+  runner: AxlRunner,
+  config: ResolvedMcpConfig = loadMcpConfig(),
+  signal?: AbortSignal
+) {
+  try {
+    if (MCP_TOOL_NAMES.has(name)) {
+      assertInlineCredentialPolicy(
+        assertRecord(args),
+        config.allowInlineCredentials && EXECUTION_TOOL_NAMES.has(name)
+      );
+    }
     switch (name) {
       case 'axl_list_objects': {
-        const enabled = getEnabledTopLevelObjects();
+        const obj = assertRecord(args);
+        const version = resolveDiscoveryVersion(obj);
+        const { artifacts } = await loadDiscoveryArtifacts(version);
+        const enabled = config.enabledObjects;
         const objects = enabled
-          ? (AXL_TOP_LEVEL_OBJECTS.filter(o => enabled.has(o)) as AxlTopLevelObject[])
-          : AXL_TOP_LEVEL_OBJECTS;
+          ? artifacts.topLevelObjects.filter(objectName => enabled.has(objectName))
+          : artifacts.topLevelObjects;
         return jsonResponse({
-          wsdlVersion: AXL_OBJECTS_SOURCE_WSDL_VERSION,
+          wsdlVersion: version,
           objectCount: objects.length,
           objects,
         });
       }
       case 'axl_list_operations': {
         const obj = assertRecord(args);
-        const objectName = requireString(obj, 'objectName') as AxlTopLevelObject;
-        const enabled = getEnabledTopLevelObjects();
-        if (enabled && !enabled.has(objectName)) {
-          throw new McpError(ErrorCode.InvalidParams, `Object "${objectName}" is not enabled`);
-        }
-        const ops = (AXL_OBJECT_OPERATIONS as Record<string, unknown>)[objectName];
-        if (!ops) throw new McpError(ErrorCode.InvalidParams, `Unknown objectName "${objectName}"`);
+        const version = resolveDiscoveryVersion(obj);
+        const { artifacts } = await loadDiscoveryArtifacts(version);
+        const objectName = requireString(obj, 'objectName');
+        const ops = requireAuthorizedObjectOperations(objectName, artifacts, config);
         return jsonResponse({
-          wsdlVersion: AXL_OBJECTS_SOURCE_WSDL_VERSION,
+          wsdlVersion: version,
           objectName,
           operations: ops,
         });
       }
       case 'axl_describe_operation': {
         const obj = assertRecord(args);
+        const version = resolveDiscoveryVersion(obj);
+        const { artifacts } = await loadDiscoveryArtifacts(version);
         const operationName = requireString(obj, 'operationName');
-        const schema = AXL_OPERATION_SCHEMAS[operationName];
+        const schema = artifacts.operationSchemas[operationName];
         if (!schema) {
-          throw new McpError(
-            ErrorCode.InvalidParams,
+          throw new AxlPolicyError(
+            'AXL_OPERATION_UNAVAILABLE',
             `No schema for "${operationName}". Use axl_list_operations to find valid operations.`
           );
         }
-        const enabled = getEnabledTopLevelObjects();
-        if (enabled) {
-          const objectName = OPERATION_TO_OBJECT.get(operationName);
-          if (objectName && !enabled.has(objectName)) {
-            throw new McpError(
-              ErrorCode.InvalidParams,
-              `Operation "${operationName}" targets "${objectName}" which is not enabled`
-            );
-          }
-        }
-        return jsonResponse({ wsdlVersion: AXL_SCHEMAS_SOURCE_VERSION, operationName, ...schema });
+        authorizeOperation(operationName, artifacts, config);
+        return jsonResponse({ wsdlVersion: version, operationName, ...schema });
       }
       case 'axl_execute': {
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(extractCredentialOverrides(obj));
+        const credentials = resolveCredentials(
+          extractCredentialOverrides(obj, config.allowInlineCredentials),
+          process.env,
+          { allowInlineCredentials: config.allowInlineCredentials }
+        );
+        const version = credentials.version;
+        if (!isSupportedCucmVersion(version)) {
+          throw new McpError(ErrorCode.InvalidParams, `Unsupported cucm_version "${version}"`);
+        }
+        const { artifacts } = await loadDiscoveryArtifacts(version);
         const operation = requireString(obj, 'operation');
         const data = optionalObject(obj, 'data') ?? {};
         const returnedTagsArray = Array.isArray(obj.returnedTags)
@@ -331,81 +525,175 @@ export async function handleTool(name: string, args: unknown, axlAPI: AxlAPIServ
                   : undefined,
             }
           : undefined;
+        const mutationGrant = mutationGrantFromArgs(obj);
 
-        const enabled = getEnabledTopLevelObjects();
-        if (enabled) {
-          const objectName = OPERATION_TO_OBJECT.get(operation);
-          if (!objectName) {
-            // Allow global action operations (e.g. doDeviceReset, doLdapSync) which have no specific object
-            if (!GLOBAL_ACTION_OPERATIONS.has(operation)) {
-              throw new McpError(
-                ErrorCode.InvalidParams,
-                `Operation "${operation}" is not mapped to a top-level object; with enabled_objects set, only mapped CRUD/action operations and global action operations are allowed`
-              );
-            }
-          } else if (!enabled.has(objectName)) {
-            throw new McpError(
-              ErrorCode.InvalidParams,
-              `Operation "${operation}" targets "${objectName}" which is not enabled`
-            );
-          }
+        authorizeOperation(operation, artifacts, config);
+
+        return jsonResponse(
+          await runner.runAxl({
+            request: {
+              credentials,
+              tlsMode: config.tlsMode,
+              operation,
+              data: tags,
+              ...(opts !== undefined && { opts }),
+              autoPage: obj.autoPage === true,
+            },
+            source: 'mcp',
+            validationMode: 'strict',
+            ...(mutationGrant !== undefined && { mutationGrant }),
+            ...(signal && { signal }),
+          })
+        );
+      }
+      case 'axl_preview_mutation': {
+        const obj = assertRecord(args);
+        const credentials = resolveCredentials(
+          extractCredentialOverrides(obj, config.allowInlineCredentials),
+          process.env,
+          { allowInlineCredentials: config.allowInlineCredentials }
+        );
+        const version = credentials.version;
+        if (!isSupportedCucmVersion(version)) {
+          throw new McpError(ErrorCode.InvalidParams, `Unsupported cucm_version "${version}"`);
         }
-
-        // Auto-pagination for list operations
-        if (obj.autoPage === true) {
-          if (!operation.startsWith('list')) {
-            throw new McpError(
-              ErrorCode.InvalidParams,
-              `autoPage is only valid for list operations, got "${operation}"`
+        const { artifacts } = await loadDiscoveryArtifacts(version);
+        const operation = requireString(obj, 'operation');
+        const data = optionalObject(obj, 'data') ?? {};
+        const returnedTagsArray = Array.isArray(obj.returnedTags)
+          ? obj.returnedTags.filter((tag): tag is string => typeof tag === 'string')
+          : undefined;
+        const taggedData =
+          returnedTagsArray && returnedTagsArray.length > 0
+            ? { ...data, returnedTags: buildReturnedTags(returnedTagsArray) }
+            : data;
+        const rawOpts = optionalObject(obj, 'opts');
+        const opts: ExecuteOperationOptions | undefined = rawOpts
+          ? {
+              clean: typeof rawOpts.clean === 'boolean' ? rawOpts.clean : undefined,
+              removeAttributes:
+                typeof rawOpts.removeAttributes === 'boolean'
+                  ? rawOpts.removeAttributes
+                  : undefined,
+              dataContainerIdentifierTails:
+                typeof rawOpts.dataContainerIdentifierTails === 'string'
+                  ? rawOpts.dataContainerIdentifierTails
+                  : undefined,
+            }
+          : undefined;
+        if (operation === 'executeSQLQuery' || operation === 'executeSQLUpdate') {
+          if (!config.sqlEnabled) {
+            throw new AxlPolicyError(
+              'AXL_SQL_DISABLED',
+              'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)'
             );
           }
-          return jsonResponse(
-            await axlAPI.listAll(credentials, operation, tags as Record<string, unknown>, opts)
+        } else {
+          authorizeOperation(operation, artifacts, config);
+        }
+        if (!runner.previewMutation) {
+          throw new AxlPolicyError(
+            'AXL_MUTATION_PREVIEW_UNAVAILABLE',
+            'Mutation preview is unavailable in this MCP server'
           );
         }
-
-        return jsonResponse(await axlAPI.executeOperation(credentials, operation, tags, opts));
+        const mutationGrant = await runner.previewMutation({
+          request: {
+            credentials,
+            tlsMode: config.tlsMode,
+            operation,
+            data: taggedData,
+            ...(opts !== undefined && { opts }),
+            autoPage: obj.autoPage === true,
+          },
+          source: 'mcp',
+          validationMode: 'strict',
+          ...(signal && { signal }),
+        });
+        return jsonResponse({
+          mutationGrant,
+          approvalRequired:
+            'Obtain explicit human approval in the MCP client before submitting this exact mutation grant.',
+        });
       }
       case 'axl_list_action_operations': {
         const obj = assertRecord(args);
+        const version = resolveDiscoveryVersion(obj);
+        const { artifacts } = await loadDiscoveryArtifacts(version);
         const objectFilter = typeof obj.objectName === 'string' ? obj.objectName : undefined;
         const verbFilter = typeof obj.verb === 'string' ? obj.verb : undefined;
-        const entries = Object.entries(AXL_ACTION_OPERATIONS).filter(([, info]) => {
+        const entries = Object.entries(artifacts.actionOperations).filter(([operation, info]) => {
           if (objectFilter && info.object !== objectFilter) return false;
           if (verbFilter && info.verb !== verbFilter) return false;
-          return true;
+          return isAuthorizedOperation(operation, artifacts, config);
         });
         const operations = Object.fromEntries(entries);
         return jsonResponse({
-          wsdlVersion: AXL_OBJECTS_SOURCE_WSDL_VERSION,
+          wsdlVersion: version,
           count: entries.length,
           operations,
         });
       }
       case 'axl_sql_query': {
-        if (!isSqlEnabled()) {
-          throw new McpError(
-            ErrorCode.InvalidParams,
+        if (!config.sqlEnabled) {
+          throw new AxlPolicyError(
+            'AXL_SQL_DISABLED',
             'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)'
           );
         }
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(extractCredentialOverrides(obj));
+        const credentials = resolveCredentials(
+          extractCredentialOverrides(obj, config.allowInlineCredentials),
+          process.env,
+          { allowInlineCredentials: config.allowInlineCredentials }
+        );
         const sql = requireString(obj, 'sql');
-        return jsonResponse(await axlAPI.executeOperation(credentials, 'executeSQLQuery', { sql }));
+        const mutationGrant = mutationGrantFromArgs(obj);
+        return jsonResponse(
+          await runner.runAxl({
+            request: {
+              credentials,
+              tlsMode: config.tlsMode,
+              operation: 'executeSQLQuery',
+              data: { sql },
+              autoPage: false,
+            },
+            source: 'mcp',
+            validationMode: 'strict',
+            ...(mutationGrant !== undefined && { mutationGrant }),
+            ...(signal && { signal }),
+          })
+        );
       }
       case 'axl_sql_update': {
-        if (!isSqlEnabled()) {
-          throw new McpError(
-            ErrorCode.InvalidParams,
+        if (!config.sqlEnabled) {
+          throw new AxlPolicyError(
+            'AXL_SQL_DISABLED',
             'SQL operations are disabled (AXL_MCP_ENABLE_SQL=false)'
           );
         }
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(extractCredentialOverrides(obj));
+        const credentials = resolveCredentials(
+          extractCredentialOverrides(obj, config.allowInlineCredentials),
+          process.env,
+          { allowInlineCredentials: config.allowInlineCredentials }
+        );
         const sql = requireString(obj, 'sql');
+        const mutationGrant = mutationGrantFromArgs(obj);
         return jsonResponse(
-          await axlAPI.executeOperation(credentials, 'executeSQLUpdate', { sql })
+          await runner.runAxl({
+            request: {
+              credentials,
+              tlsMode: config.tlsMode,
+              operation: 'executeSQLUpdate',
+              data: { sql },
+              autoPage: false,
+            },
+            source: 'mcp',
+            validationMode: 'strict',
+            ...(mutationGrant !== undefined && { mutationGrant }),
+            ...(signal && { signal }),
+          })
         );
       }
       default:

@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { buildReturnedTags, handleTool } from '../src/tools/index';
-import type { AxlAPIService } from '../src/services/axl/index';
+import type { AxlRunner } from '../src/tools/types';
+import type { RunAxlOptions } from '../src/lib/axl-runner';
+import { loadMcpConfig } from '../src/lib/tool-config';
+import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 
 describe('buildReturnedTags', () => {
   it('flat fields produce boolean map', () => {
@@ -129,11 +132,7 @@ describe('buildReturnedTags', () => {
   // ---- Lab script: check-css-details.cjs (line details) ----
   // returnedTags: { lines: { line: { index: true, dirn: { pattern: true }, callForwardAll: true } } }
   it('matches check-css-details.cjs line returnedTags', () => {
-    const input = [
-      'lines.line.index',
-      'lines.line.dirn.pattern',
-      'lines.line.callForwardAll',
-    ];
+    const input = ['lines.line.index', 'lines.line.dirn.pattern', 'lines.line.callForwardAll'];
 
     const expected = {
       lines: {
@@ -179,14 +178,29 @@ describe('buildReturnedTags', () => {
 });
 
 describe('handleTool returnedTags pipeline', () => {
+  // Loading the 15.0 generated artifact is intentionally outside the focused
+  // payload assertion: under parallel Vitest workers its first dynamic import
+  // can contend with other version loaders and consume the assertion budget.
+  beforeAll(async () => {
+    await loadAxlVersionArtifacts('15.0');
+  });
+
+  const phoneConfig = loadMcpConfig(
+    {
+      AXL_MCP_ENABLED_OBJECTS: 'Phone',
+      AXL_MCP_ALLOW_INLINE_CREDENTIALS: 'true',
+    },
+    ['node', 'test']
+  );
+
   function createCapturingMock() {
     const calls: { operation: string; data: unknown }[] = [];
-    const api: AxlAPIService = {
-      executeOperation: async (_creds: unknown, operation: unknown, data: unknown) => {
-        calls.push({ operation: String(operation), data });
+    const api: AxlRunner = {
+      runAxl: async (options: RunAxlOptions) => {
+        calls.push({ operation: options.request.operation, data: options.request.data });
         return { ok: true };
       },
-    } as unknown as AxlAPIService;
+    };
     return { api, calls };
   }
 
@@ -219,7 +233,8 @@ describe('handleTool returnedTags pipeline', () => {
           'lines.line.recordingProfileName',
         ],
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -259,7 +274,8 @@ describe('handleTool returnedTags pipeline', () => {
         data: { searchCriteria: { name: '%' } },
         returnedTags: ['name', 'model', 'lines.line.dirn.pattern'],
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -286,13 +302,10 @@ describe('handleTool returnedTags pipeline', () => {
         cucm_version: '15.0',
         operation: 'getPhone',
         data: { name: 'SEP505C885DF37F' },
-        returnedTags: [
-          'lines.line.index',
-          'lines.line.dirn.pattern',
-          'lines.line.callForwardAll',
-        ],
+        returnedTags: ['lines.line.index', 'lines.line.dirn.pattern', 'lines.line.callForwardAll'],
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -323,7 +336,8 @@ describe('handleTool returnedTags pipeline', () => {
         operation: 'getPhone',
         data: { name: 'SEP001122334455' },
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -344,7 +358,8 @@ describe('handleTool returnedTags pipeline', () => {
         data: { name: 'SEP001122334455' },
         returnedTags: [],
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -368,7 +383,8 @@ describe('handleTool returnedTags pipeline', () => {
         },
         returnedTags: ['name', 'callingSearchSpaceName'],
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);
@@ -395,7 +411,8 @@ describe('handleTool returnedTags pipeline', () => {
           returnedTags: { name: true, model: true },
         },
       },
-      api
+      api,
+      phoneConfig
     );
 
     expect(calls).toHaveLength(1);

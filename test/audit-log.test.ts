@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
   rmSync,
@@ -17,9 +17,13 @@ import {
   getAdaptiveDelay,
   recordOperation,
   redactCredentials,
+  sanitizeError,
   getAuditLogLevel,
+  auditLogPathForHost,
+  flushAuditLog,
   type AuditEntry,
 } from '../src/lib/audit-log';
+import { AxlPolicyError } from '../src/lib/policy-error';
 
 let tempDir: string;
 const originalEnv = { ...process.env };
@@ -30,14 +34,14 @@ beforeEach(() => {
   delete process.env.AXL_MCP_AUDIT_LOG;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushAuditLog();
   rmSync(tempDir, { recursive: true, force: true });
   process.env = { ...originalEnv };
 });
 
 function readLogLines(host: string): AuditEntry[] {
-  const safe = host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-  const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+  const content = readFileSync(auditLogPathForHost(host), 'utf-8');
   return content
     .trim()
     .split('\n')
@@ -59,6 +63,21 @@ describe('writeAuditEntry', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]!.operation).toBe('getPhone');
     expect(lines[0]!.status).toBe('ok');
+  });
+
+  it('uses an opaque stable audit path instead of exposing the host', () => {
+    const host = 'private-cluster.internal';
+    writeAuditEntry(host, {
+      ts: new Date().toISOString(),
+      operation: 'getPhone',
+      durationMs: 1,
+      status: 'ok',
+    });
+
+    const path = auditLogPathForHost(host);
+    expect(path).not.toContain(host);
+    expect(path).toBe(auditLogPathForHost(host));
+    expect(existsSync(path)).toBe(true);
   });
 
   it('creates separate files per host', () => {
@@ -138,7 +157,7 @@ describe('writeAuditEntry', () => {
     });
 
     expect(statSync(nestedAuditDir).mode & 0o777).toBe(0o700);
-    expect(statSync(join(nestedAuditDir, 'secure-host.jsonl')).mode & 0o777).toBe(0o600);
+    expect(statSync(auditLogPathForHost('secure-host')).mode & 0o777).toBe(0o600);
   });
 
   it('redacts direct audit entries before persistence', () => {
@@ -178,6 +197,17 @@ describe('writeAuditEntry', () => {
   });
 });
 
+describe('recordOperation persistence', () => {
+  it('queues operation audit persistence so an AXL request does not synchronously append a file', async () => {
+    const host = 'queued-audit-host';
+    recordOperation(host, 'getPhone', Date.now(), { ok: true });
+
+    expect(existsSync(auditLogPathForHost(host))).toBe(false);
+    await flushAuditLog();
+    expect(existsSync(auditLogPathForHost(host))).toBe(true);
+  });
+});
+
 describe('getRecentThrottleCount', () => {
   it('returns 0 for non-existent host', () => {
     expect(getRecentThrottleCount('no-such-host')).toBe(0);
@@ -209,13 +239,39 @@ describe('getRecentThrottleCount', () => {
     expect(getRecentThrottleCount('host')).toBe(2);
   });
 
+  it('uses operation-time throttle state instead of rereading the audit file on the request path', () => {
+    const host = 'in-memory-throttle-host';
+    writeAuditEntry(host, {
+      ts: new Date().toISOString(),
+      operation: 'listPhone',
+      durationMs: 1,
+      status: 'throttled',
+    });
+    rmSync(auditLogPathForHost(host));
+
+    expect(getRecentThrottleCount(host)).toBe(1);
+  });
+
+  it('bounds in-memory throttle state to avoid retaining every historical host', () => {
+    for (let index = 0; index <= 64; index++) {
+      writeAuditEntry(`bounded-host-${index}`, {
+        ts: new Date().toISOString(),
+        operation: 'listPhone',
+        durationMs: 1,
+        status: 'throttled',
+      });
+    }
+    rmSync(auditLogPathForHost('bounded-host-0'));
+
+    expect(getRecentThrottleCount('bounded-host-0')).toBe(0);
+  });
+
   it('ignores old throttle events outside the 5-minute window', () => {
     const old = new Date(Date.now() - 6 * 60 * 1000); // 6 minutes ago
     const recent = new Date();
 
     // Write old entry directly to file
-    const safe = 'host';
-    const filePath = join(tempDir, `${safe}.jsonl`);
+    const filePath = auditLogPathForHost('host');
     mkdirSync(tempDir, { recursive: true });
     writeFileSync(
       filePath,
@@ -285,7 +341,7 @@ describe('getAdaptiveDelay', () => {
 });
 
 describe('recordOperation', () => {
-  it('records a successful operation', () => {
+  it('records a successful operation', async () => {
     const start = Date.now() - 150;
     const entry = recordOperation('host', 'getPhone', start, { ok: true, rows: 1 });
 
@@ -294,6 +350,7 @@ describe('recordOperation', () => {
     expect(entry.rows).toBe(1);
     expect(entry.durationMs).toBeGreaterThanOrEqual(100);
 
+    await flushAuditLog();
     const lines = readLogLines('host');
     expect(lines).toHaveLength(1);
   });
@@ -326,18 +383,19 @@ describe('recordOperation', () => {
     expect(entry.status).toBe('error');
   });
 
-  it('defaults to metadata-only records', () => {
+  it('defaults to metadata-only records', async () => {
     recordOperation('host', 'getPhone', Date.now(), {
       ok: true,
       request: { name: 'SEP111', cucm_password: 'secret123', cucm_username: 'admin' },
     });
 
+    await flushAuditLog();
     const lines = readLogLines('host');
     expect(lines[0]!.request).toBeUndefined();
     expect(lines[0]!.response).toBeUndefined();
   });
 
-  it('redacts both request and response when payload logging is explicitly enabled', () => {
+  it('redacts both request and response when payload logging is explicitly enabled', async () => {
     process.env.AXL_MCP_AUDIT_LOG = 'full';
     recordOperation('host', 'getPhone', Date.now(), {
       ok: false,
@@ -347,15 +405,55 @@ describe('recordOperation', () => {
       sensitiveValues: ['secret123', 'response-token'],
     });
 
+    await flushAuditLog();
     const persisted = JSON.stringify(readLogLines('host')[0]);
     expect(persisted).not.toContain('secret123');
     expect(persisted).not.toContain('response-token');
     expect(persisted).toContain('***');
   });
 
+  it('bounds and reports audit queue loss when the destination cannot be written', async () => {
+    const blockedPath = join(tempDir, 'blocked-destination');
+    writeFileSync(blockedPath, 'not a directory');
+    setAuditDir(blockedPath);
+    const diagnostics = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      for (let index = 0; index < 300; index++) {
+        recordOperation('blocked-host', 'getPhone', Date.now(), { ok: true });
+      }
+
+      await expect(flushAuditLog()).rejects.toThrow('Audit persistence incomplete');
+      expect(diagnostics.mock.calls.flat().join('')).toContain('audit_queue_dropped');
+      expect(diagnostics.mock.calls.flat().join('')).toContain('audit_write_failed');
+    } finally {
+      diagnostics.mockRestore();
+    }
+  });
+
+  it('retains dispatched-mutation policy classification when an oversized audit entry is compacted', async () => {
+    process.env.AXL_MCP_AUDIT_LOG = 'full';
+    recordOperation('host', 'updatePhone', Date.now(), {
+      ok: false,
+      error: 'transport timeout '.repeat(2_000),
+      errorCode: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+      category: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+      request: { payload: 'request-body '.repeat(2_000) },
+      response: { payload: 'response-body '.repeat(2_000) },
+    });
+
+    await flushAuditLog();
+
+    expect(readLogLines('host')[0]).toMatchObject({
+      status: 'error',
+      errorCode: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+      category: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+    });
+  });
+
   it.each(['request', 'full'] as const)(
     'redacts AXL PIN values from %s audit entries while preserving ordinary fields',
-    level => {
+    async level => {
       const pin = 'AXL-PIN-AUDIT-731';
       process.env.AXL_MCP_AUDIT_LOG = level;
       recordOperation('host', 'doAuthenticateUser', Date.now(), {
@@ -367,6 +465,7 @@ describe('recordOperation', () => {
         },
       });
 
+      await flushAuditLog();
       const entry = readLogLines('host')[0]!;
       const persisted = JSON.stringify(entry);
       expect(persisted).not.toContain(pin);
@@ -377,7 +476,7 @@ describe('recordOperation', () => {
     }
   );
 
-  it('includes response at full log level', () => {
+  it('includes response at full log level', async () => {
     process.env.AXL_MCP_AUDIT_LOG = 'full';
     recordOperation('host', 'getPhone', Date.now(), {
       ok: true,
@@ -385,6 +484,7 @@ describe('recordOperation', () => {
       response: { return: { phone: { name: 'SEP111', model: '8845' } } },
     });
 
+    await flushAuditLog();
     const lines = readLogLines('host');
     expect(lines[0]!.request).toEqual({ name: 'SEP111' });
     expect(lines[0]!.response).toEqual({ return: { phone: { name: 'SEP111', model: '8845' } } });
@@ -399,25 +499,29 @@ describe('recordOperation', () => {
         { userid: 'bob', nested: { user: 'nested-user' } },
       ],
     ],
-  ] as const)('preserves the %s AXL response wrapper in full audit records', (operation, user) => {
-    process.env.AXL_MCP_AUDIT_LOG = 'full';
-    recordOperation('host', operation, Date.now(), {
-      ok: true,
-      response: { return: { user } },
-    });
+  ] as const)(
+    'preserves the %s AXL response wrapper in full audit records',
+    async (operation, user) => {
+      process.env.AXL_MCP_AUDIT_LOG = 'full';
+      recordOperation('host', operation, Date.now(), {
+        ok: true,
+        response: { return: { user } },
+      });
 
-    const response = readLogLines('host')[0]!.response as {
-      return: { user: unknown };
-    };
-    const persisted = JSON.stringify(response);
-    expect(response.return.user).not.toBe('***');
-    expect(persisted).toContain('alice');
-    expect(persisted).not.toContain('directory-login');
-    expect(persisted).not.toContain('directory-password');
-    expect(persisted).not.toContain('nested-user');
-  });
+      await flushAuditLog();
+      const response = readLogLines('host')[0]!.response as {
+        return: { user: unknown };
+      };
+      const persisted = JSON.stringify(response);
+      expect(response.return.user).not.toBe('***');
+      expect(persisted).toContain('alice');
+      expect(persisted).not.toContain('directory-login');
+      expect(persisted).not.toContain('directory-password');
+      expect(persisted).not.toContain('nested-user');
+    }
+  );
 
-  it('excludes request at metadata log level', () => {
+  it('excludes request at metadata log level', async () => {
     process.env.AXL_MCP_AUDIT_LOG = 'metadata';
     recordOperation('host', 'getPhone', Date.now(), {
       ok: true,
@@ -425,6 +529,7 @@ describe('recordOperation', () => {
       response: { return: { phone: {} } },
     });
 
+    await flushAuditLog();
     const lines = readLogLines('host');
     expect(lines[0]!.request).toBeUndefined();
     expect(lines[0]!.response).toBeUndefined();
@@ -435,13 +540,24 @@ describe('recordOperation', () => {
     const entry = recordOperation('host', 'getPhone', Date.now(), { ok: true });
 
     expect(entry.status).toBe('ok');
-    const safe = 'host';
-    const filePath = join(tempDir, `${safe}.jsonl`);
+    const filePath = auditLogPathForHost('host');
     expect(existsSync(filePath)).toBe(false);
   });
 });
 
 describe('redactCredentials', () => {
+  it('preserves dependency-free policy identity while redacting its message', () => {
+    const error = new AxlPolicyError('AXL_REQUEST_CANCELLED', 'cancelled secret-password');
+
+    const sanitized = sanitizeError(error, ['secret-password']);
+
+    expect(sanitized).toBeInstanceOf(AxlPolicyError);
+    expect(sanitized).toMatchObject({
+      code: 'AXL_REQUEST_CANCELLED',
+      message: 'cancelled ***',
+    });
+  });
+
   it('redacts scalar user aliases in general objects, arrays, and nested errors', () => {
     const fault = new Error('request failed');
     Object.assign(fault, {
@@ -629,13 +745,14 @@ describe('redactCredentials', () => {
     }
   );
 
-  it('redacts complete delimiter-bearing authorization values from persisted audit errors', () => {
+  it('redacts complete delimiter-bearing authorization values from persisted audit errors', async () => {
     recordOperation('host', 'getPhone', Date.now(), {
       ok: false,
       error:
         'SOAP fault\nAuthorization: Digest nonce="audit-nonce", response="audit-response"; next=second-token\nFault-Code: 401',
     });
 
+    await flushAuditLog();
     const persisted = JSON.stringify(readLogLines('host')[0]);
     for (const secret of ['audit-nonce', 'audit-response', 'second-token']) {
       expect(persisted).not.toContain(secret);
@@ -731,7 +848,7 @@ describe('getAuditLogLevel', () => {
     }
   );
 
-  it('does not persist request payload for an invalid configured audit level', () => {
+  it('does not persist request payload for an invalid configured audit level', async () => {
     process.env.AXL_MCP_AUDIT_LOG = 'typo';
 
     recordOperation('host', 'getPhone', Date.now(), {
@@ -739,6 +856,7 @@ describe('getAuditLogLevel', () => {
       request: { name: 'SEP111', password: 'must-not-be-logged' },
     });
 
+    await flushAuditLog();
     const persisted = JSON.stringify(readLogLines('host')[0]);
     expect(persisted).not.toContain('SEP111');
     expect(persisted).not.toContain('must-not-be-logged');

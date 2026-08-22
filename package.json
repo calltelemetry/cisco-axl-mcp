@@ -5,13 +5,11 @@
   "repository": "https://github.com/calltelemetry/cisco-axl-mcp.git",
   "type": "module",
   "engines": {
-    "node": ">=22.14.0",
-    "npm": ">=11.5.1"
+    "node": ">=22.14.0"
   },
-  "main": "build/index.js",
   "bin": {
-    "cisco-axl": "build/cli.js",
-    "cisco-axl-mcp": "build/index.js"
+    "cisco-axl-mcp": "build/index.js",
+    "cisco-axl-mcp-cli": "build/cli.js"
   },
   "files": [
     "build/**/*"
@@ -24,7 +22,7 @@
     "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
     "build": "vite build && chmod 755 build/index.js build/cli.js",
     "start": "node build/index.js",
-    "dev": "vite build --watch",
+    "dev": "vite build --watch --mode development",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ test/ scripts/",
     "lint:fix": "eslint src/ test/ scripts/ --fix",
@@ -33,7 +31,7 @@
     "test": "vitest run",
     "test:mcp": "vitest run test/mcp-conformance.test.ts",
     "package:smoke": "vitest run test/package-build.test.ts",
-    "validate": "yarn typecheck && yarn lint --max-warnings=50 && yarn test",
+    "validate": "yarn typecheck && yarn format:check && yarn lint --max-warnings=0 && yarn vitest run --coverage && yarn build && yarn package:smoke",
     "prepack": "yarn build && yarn test:mcp"
   },
   "keywords": [
@@ -47,13 +45,13 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@types/node": "^26.1.1",
     "cisco-axl": "^2.1.0",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
     "@vitest/coverage-v8": "^4.1.7",
     "eslint": "^10.4.0",
     "prettier": "^3.8.3",
@@ -63,9 +61,6 @@
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.14",
     "vitest": "^4.1.7"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0 || ^6.0.0"
   },
   "packageManager": "yarn@4.12.0"
 }

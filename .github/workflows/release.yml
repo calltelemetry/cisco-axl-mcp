@@ -19,17 +19,17 @@ jobs:
     steps:
       - name: Require repository-scoped release App configuration
         env:
-          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+          RELEASE_APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
           RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
         run: |
-          test -n "$RELEASE_APP_ID"
+          test -n "$RELEASE_APP_CLIENT_ID"
           test -n "$RELEASE_APP_PRIVATE_KEY"
 
       - name: Create repository-scoped release App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
@@ -55,14 +55,26 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: refs/tags/${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
+
+      - name: Verify checked-out tag before running repository commands
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$tag_commit"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+
+      - name: Verify exact release version before dependencies
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: test "$(node -p 'require("./package.json").version')" = "${RELEASE_TAG#v}"
 
       - run: npm install --global npm@11.5.1
 
@@ -82,12 +94,4 @@ jobs:
 
       - run: yarn package:smoke
 
-      - name: Verify exact release version and tag
-        env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          test "$(node -p 'require("./package.json").version')" = "${RELEASE_TAG#v}"
-          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
-          test "$(git rev-parse HEAD)" = "$tag_commit"
-
-      - run: npm publish --access public
+      - run: npm publish --access public --provenance

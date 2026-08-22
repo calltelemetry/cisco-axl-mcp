@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { assertRecord, requireString, optionalObject, extractCredentialOverrides, requireNameOrUuid } from '../src/types/axl/guards';
+import {
+  assertRecord,
+  assertInlineCredentialPolicy,
+  requireString,
+  optionalObject,
+  extractCredentialOverrides,
+  requireNameOrUuid,
+} from '../src/types/axl/guards';
 
 describe('assertRecord', () => {
   it('returns record for valid object', () => {
@@ -59,12 +66,15 @@ describe('optionalObject', () => {
 
 describe('extractCredentialOverrides', () => {
   it('extracts all credential fields', () => {
-    const result = extractCredentialOverrides({
-      cucm_host: 'host',
-      cucm_username: 'user',
-      cucm_password: 'pass',
-      cucm_version: '14.0',
-    });
+    const result = extractCredentialOverrides(
+      {
+        cucm_host: 'host',
+        cucm_username: 'user',
+        cucm_password: 'pass',
+        cucm_version: '14.0',
+      },
+      true
+    );
     expect(result).toEqual({
       cucm_host: 'host',
       cucm_username: 'user',
@@ -77,6 +87,35 @@ describe('extractCredentialOverrides', () => {
     const result = extractCredentialOverrides({});
     expect(result.cucm_host).toBeUndefined();
     expect(result.cucm_username).toBeUndefined();
+  });
+
+  it('rejects model-supplied inline credentials unless explicitly enabled', () => {
+    expect(() => extractCredentialOverrides({ cucm_password: 'not-for-transcripts' })).toThrowError(
+      expect.objectContaining({ code: 'AXL_INLINE_CREDENTIALS_DISABLED' })
+    );
+  });
+
+  it.each([
+    'cucm_version',
+    'operation',
+    'data',
+    'sql',
+    'opts',
+    'autoPage',
+    'mutationGrant',
+    'returnedTags',
+  ])('does not treat legitimate top-level %s as a credential attempt', field => {
+    expect(() => assertInlineCredentialPolicy({ [field]: undefined })).not.toThrow();
+  });
+
+  it.each(
+    ['api', 'access', 'auth', 'client', 'bearer', 'session'].flatMap(prefix =>
+      ['token', 'key', 'secret', 'id'].map(suffix => `${prefix}_${suffix}`)
+    )
+  )('rejects the bounded top-level compound credential name %s', field => {
+    expect(() => assertInlineCredentialPolicy({ [field]: undefined })).toThrowError(
+      expect.objectContaining({ code: 'AXL_INLINE_CREDENTIALS_DISABLED' })
+    );
   });
 });
 

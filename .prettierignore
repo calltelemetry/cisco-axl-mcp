@@ -1,4 +1,4 @@
 build
 node_modules
 schema
-
+src/types/generated/

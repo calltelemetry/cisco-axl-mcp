@@ -1,9 +1,16 @@
 import type { CucmCredentials } from '../../types/credentials';
-import type { ExecuteOperationOptions, TlsMode } from '../../lib/axl-client';
+import type {
+  AxlClientCacheOptions,
+  AxlRequestLifecycle,
+  ExecuteOperationOptions,
+  TlsMode,
+} from '../../lib/axl-client';
 import { getAxlClient } from '../../lib/axl-client';
-import { withRetry, isRetryable, isThrottleError } from '../../lib/retry';
+import { emitAxlDiagnostic } from '../../lib/runtime-diagnostics';
+import { isRetryable, isThrottleError } from '../../lib/retry';
 import { isMutationOperationForVersion } from '../../lib/operation-classification-core';
 import { AxlPolicyError } from '../../types/axl/errors';
+import type { ResolvedMcpConfig } from '../../lib/tool-config';
 import {
   getAdaptiveDelay,
   recordOperation,
@@ -11,12 +18,173 @@ import {
   sanitizeError,
 } from '../../lib/audit-log';
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_CLIENT_CACHE_MAX_ENTRIES = 16;
+
+export interface AxlServiceOptions {
+  readonly tlsMode: TlsMode;
+  readonly requestTimeoutMs: number;
+  readonly clientCacheMaxEntries: number;
+  readonly clock?: MonotonicClock;
+}
+
+export interface MonotonicClock {
+  now(): number;
+}
+
+interface ExecutionDeadline {
+  readonly expiresAt: number;
+  dispatched: boolean;
+}
+
+const monotonicClock: MonotonicClock = { now: () => performance.now() };
+
+function defaultServiceOptions(tlsMode: TlsMode = 'secure'): AxlServiceOptions {
+  return {
+    tlsMode,
+    requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    clientCacheMaxEntries: DEFAULT_CLIENT_CACHE_MAX_ENTRIES,
+  };
+}
+
+function resolveServiceOptions(
+  options:
+    | TlsMode
+    | AxlServiceOptions
+    | Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'> = 'secure'
+): AxlServiceOptions {
+  if (typeof options === 'string') return defaultServiceOptions(options);
+  return {
+    tlsMode: options.tlsMode,
+    requestTimeoutMs: options.requestTimeoutMs,
+    clientCacheMaxEntries: options.clientCacheMaxEntries,
+    clock: (options as AxlServiceOptions).clock,
+  };
+}
+
+function requestTimeoutError(dispatched: boolean): AxlPolicyError {
+  if (!dispatched) return notDispatchedTimeoutError();
+  return new AxlPolicyError(
+    'AXL_READ_TIMEOUT',
+    'AXL read timed out before the configured deadline'
+  );
+}
+
+function notDispatchedTimeoutError(): AxlPolicyError {
+  return new AxlPolicyError(
+    'AXL_REQUEST_TIMEOUT_NOT_DISPATCHED',
+    'AXL request deadline elapsed before the operation was dispatched'
+  );
+}
+
+function requestCancelledError(): AxlPolicyError {
+  return new AxlPolicyError('AXL_REQUEST_CANCELLED', 'AXL request was cancelled before completion');
+}
+
+function remainingMs(deadline: ExecutionDeadline, clock: MonotonicClock): number {
+  return Math.max(0, deadline.expiresAt - clock.now());
+}
+
+async function delayWithinDeadline(
+  delayMs: number,
+  deadline: ExecutionDeadline,
+  clock: MonotonicClock,
+  signal?: AbortSignal
+): Promise<void> {
+  const remaining = remainingMs(deadline, clock);
+  if (remaining <= 0) throw requestTimeoutError(deadline.dispatched);
+  const waitMs = Math.min(delayMs, remaining);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timerRef: { timer?: ReturnType<typeof setTimeout> } = {};
+    const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timerRef.timer) clearTimeout(timerRef.timer);
+      signal?.removeEventListener('abort', abort);
+      complete();
+    };
+    const abort = () => finish(() => reject(requestCancelledError()));
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+    timerRef.timer = setTimeout(() => {
+      if (delayMs >= remaining) finish(() => reject(requestTimeoutError(deadline.dispatched)));
+      else finish(resolve);
+    }, waitMs);
+  });
+}
+
+function executeWithinDeadline<T>(
+  operation: (lifecycle: AxlRequestLifecycle) => Promise<T>,
+  deadline: ExecutionDeadline,
+  clock: MonotonicClock,
+  shutdownSignal?: AbortSignal
+): Promise<T> {
+  const remaining = remainingMs(deadline, clock);
+  if (remaining <= 0) return Promise.reject(requestTimeoutError(deadline.dispatched));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const controller = new AbortController();
+    const timeoutRef: { timer?: ReturnType<typeof setTimeout> } = {};
+    const finish = (complete: () => void) => {
+      if (settled) return false;
+      settled = true;
+      if (timeoutRef.timer) clearTimeout(timeoutRef.timer);
+      shutdownSignal?.removeEventListener('abort', abortFromShutdown);
+      complete();
+      return true;
+    };
+    const abortFromShutdown = () => {
+      if (!finish(() => reject(requestCancelledError()))) return;
+      controller.abort();
+    };
+    shutdownSignal?.addEventListener('abort', abortFromShutdown, { once: true });
+    const lifecycle: AxlRequestLifecycle = {
+      timeoutMs: Math.max(1, Math.ceil(remaining)),
+      signal: controller.signal,
+      remainingTimeoutMs: () => Math.max(0, Math.ceil(remainingMs(deadline, clock))),
+      markDispatched: () => {
+        deadline.dispatched = true;
+      },
+    };
+    timeoutRef.timer = setTimeout(() => {
+      if (!finish(() => reject(requestTimeoutError(deadline.dispatched)))) return;
+      controller.abort();
+    }, remaining);
+
+    if (shutdownSignal?.aborted) {
+      abortFromShutdown();
+      return;
+    }
+
+    Promise.resolve()
+      .then(() => operation(lifecycle))
+      .then(
+        value => {
+          finish(() => resolve(value));
+        },
+        error => {
+          finish(() => reject(error));
+        }
+      );
+  });
+}
+
+function retryOptionsFromEnvironment(): { maxRetries: number; baseDelayMs: number } {
+  return {
+    maxRetries: parseInt(process.env.AXL_MCP_MAX_RETRIES ?? '3', 10) || 3,
+    baseDelayMs: parseInt(process.env.AXL_MCP_RETRY_BASE_DELAY_MS ?? '1000', 10) || 1000,
+  };
 }
 
 export interface AxlServiceExecutionPolicy {
   readonly mutationRetryMode: 'strict';
+  /** Request-local cancellation propagated from the MCP server shutdown path. */
+  readonly shutdownSignal?: AbortSignal;
 }
 
 export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.freeze({
@@ -24,77 +192,160 @@ export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.fre
 });
 
 export class AxlAPIService {
-  constructor(private readonly defaultTlsMode: TlsMode = 'secure') {}
+  private readonly options: AxlServiceOptions;
+  private readonly clock: MonotonicClock;
+
+  constructor(
+    options:
+      | TlsMode
+      | AxlServiceOptions
+      | Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'> = 'secure'
+  ) {
+    this.options = resolveServiceOptions(options);
+    this.clock = this.options.clock ?? monotonicClock;
+  }
 
   async executeOperation(
     credentials: CucmCredentials,
     operation: string,
     tags: unknown,
     opts?: ExecuteOperationOptions,
-    tlsMode: TlsMode = this.defaultTlsMode,
-    executionPolicy?: AxlServiceExecutionPolicy
+    tlsMode: TlsMode = this.options.tlsMode,
+    executionPolicy?: AxlServiceExecutionPolicy,
+    shutdownSignal?: AbortSignal
   ): Promise<unknown> {
-    // Apply adaptive delay based on recent throttle history
-    const adaptiveDelay = getAdaptiveDelay(credentials.host);
-    if (adaptiveDelay > 0) {
-      await delay(adaptiveDelay);
-    }
+    const effectiveShutdownSignal = shutdownSignal ?? executionPolicy?.shutdownSignal;
+    return this.executeOperationWithinDeadline(
+      credentials,
+      operation,
+      tags,
+      opts,
+      tlsMode,
+      executionPolicy,
+      { expiresAt: this.clock.now() + this.options.requestTimeoutMs, dispatched: false },
+      effectiveShutdownSignal
+    );
+  }
 
+  private async executeOperationWithinDeadline(
+    credentials: CucmCredentials,
+    operation: string,
+    tags: unknown,
+    opts: ExecuteOperationOptions | undefined,
+    tlsMode: TlsMode,
+    executionPolicy: AxlServiceExecutionPolicy | undefined,
+    deadline: ExecutionDeadline,
+    shutdownSignal?: AbortSignal
+  ): Promise<unknown> {
     const startTime = Date.now();
-    const strictMutation =
-      executionPolicy?.mutationRetryMode === 'strict' &&
-      isMutationOperationForVersion(operation, credentials.version);
+    const mutationOperation = isMutationOperationForVersion(operation, credentials.version);
+    const strictMutation = executionPolicy?.mutationRetryMode === 'strict' && mutationOperation;
+    const cacheOptions: AxlClientCacheOptions = {
+      ...(this.options.clientCacheMaxEntries === DEFAULT_CLIENT_CACHE_MAX_ENTRIES
+        ? {}
+        : { maxEntries: this.options.clientCacheMaxEntries }),
+      onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
+    };
+
+    const dispatch = (lifecycle: AxlRequestLifecycle) =>
+      getAxlClient(credentials, tlsMode, cacheOptions).executeOperation(
+        operation,
+        tags,
+        opts,
+        lifecycle
+      );
 
     try {
-      const result = await withRetry(
-        () => getAxlClient(credentials, tlsMode).executeOperation(operation, tags, opts),
-        strictMutation ? { maxRetries: 0 } : undefined,
-        {
-          onRetry: (attempt, error) => {
-            const errMsg = error instanceof Error ? error.message : String(error);
-            recordOperation(credentials.host, operation, startTime, {
-              ok: false,
-              throttled: isThrottleError(error),
-              error: errMsg,
-              attempt,
-              request: tags,
-              sensitiveValues: [credentials.password, credentials.username],
-            });
-          },
+      // Apply adaptive delay based on recent throttle history within the same deadline.
+      const adaptiveDelay = getAdaptiveDelay(credentials.host);
+      if (adaptiveDelay > 0) {
+        await delayWithinDeadline(adaptiveDelay, deadline, this.clock, shutdownSignal);
+      }
+      const retryOptions = retryOptionsFromEnvironment();
+      const maxRetries = strictMutation ? 0 : retryOptions.maxRetries;
+      let result: unknown;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          result = await executeWithinDeadline(dispatch, deadline, this.clock, shutdownSignal);
+          break;
+        } catch (error) {
+          if (error instanceof AxlPolicyError) throw error;
+          if (attempt >= maxRetries || !isRetryable(error)) throw error;
+
+          const retryAttempt = attempt + 1;
+          const errMsg = error instanceof Error ? error.message : String(error);
+          recordOperation(credentials.host, operation, startTime, {
+            ok: false,
+            throttled: isThrottleError(error),
+            error: errMsg,
+            attempt: retryAttempt,
+            request: tags,
+            sensitiveValues: [credentials.password, credentials.username, credentials.host],
+          });
+          const retryDelay = Math.min(retryOptions.baseDelayMs * Math.pow(2, attempt), 30_000);
+          await delayWithinDeadline(retryDelay, deadline, this.clock, shutdownSignal);
         }
-      );
+      }
 
       // Count rows if result looks like a list response
       const rows = countResultRows(result);
-      const safeResult = redactCredentials(result, [credentials.password, credentials.username], {
-        kind: 'axl-response',
-        operation,
-      });
+      const safeResult = redactCredentials(
+        result,
+        [credentials.password, credentials.username, credentials.host],
+        {
+          kind: 'axl-response',
+          operation,
+        }
+      );
       recordOperation(credentials.host, operation, startTime, {
         ok: true,
         rows,
         request: tags,
         response: safeResult,
-        sensitiveValues: [credentials.password, credentials.username],
+        sensitiveValues: [credentials.password, credentials.username, credentials.host],
       });
 
       return safeResult;
     } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
+      let finalError = error;
+      if (
+        mutationOperation &&
+        error instanceof AxlPolicyError &&
+        (error.code === 'AXL_READ_TIMEOUT' || error.code === 'AXL_REQUEST_CANCELLED') &&
+        deadline.dispatched
+      ) {
+        finalError = new AxlPolicyError(
+          'AXL_MUTATION_OUTCOME_UNKNOWN',
+          'Mutation outcome is unknown after the request deadline elapsed post-dispatch; reconciliation/readback is required before another attempt'
+        );
+      } else if (strictMutation && isRetryable(error)) {
+        finalError = new AxlPolicyError(
+          'AXL_MUTATION_OUTCOME_UNKNOWN',
+          'Mutation outcome is unknown after a retryable transport failure; reconciliation/readback is required before another attempt'
+        );
+      }
+      if (
+        finalError instanceof AxlPolicyError &&
+        finalError.code.startsWith('AXL_') &&
+        (finalError.code.includes('TIMEOUT') || finalError.code.includes('OUTCOME_UNKNOWN'))
+      ) {
+        emitAxlDiagnostic(`axl_timeout_${finalError.code.toLowerCase().replace('axl_', '')}`);
+      }
+      const errMsg = finalError instanceof Error ? finalError.message : String(finalError);
+      const policyCode = finalError instanceof AxlPolicyError ? finalError.code : undefined;
       recordOperation(credentials.host, operation, startTime, {
         ok: false,
         throttled: isThrottleError(error),
         error: errMsg,
         request: tags,
-        sensitiveValues: [credentials.password, credentials.username],
+        sensitiveValues: [credentials.password, credentials.username, credentials.host],
+        ...(policyCode && { errorCode: policyCode, category: policyCode }),
       });
-      if (strictMutation && isRetryable(error)) {
-        throw new AxlPolicyError(
-          'AXL_MUTATION_OUTCOME_UNKNOWN',
-          'Mutation outcome is unknown after a retryable transport failure; reconciliation/readback is required before another attempt'
-        );
-      }
-      throw sanitizeError(error, [credentials.password, credentials.username]);
+      throw sanitizeError(finalError, [
+        credentials.password,
+        credentials.username,
+        credentials.host,
+      ]);
     }
   }
 
@@ -103,9 +354,15 @@ export class AxlAPIService {
     operation: string,
     data: Record<string, unknown>,
     opts?: ExecuteOperationOptions,
-    tlsMode: TlsMode = this.defaultTlsMode,
-    executionPolicy?: AxlServiceExecutionPolicy
+    tlsMode: TlsMode = this.options.tlsMode,
+    executionPolicy?: AxlServiceExecutionPolicy,
+    shutdownSignal?: AbortSignal
   ): Promise<{ rows: unknown[]; totalFetched: number; pages: number; truncated: boolean }> {
+    const effectiveShutdownSignal = shutdownSignal ?? executionPolicy?.shutdownSignal;
+    const deadline: ExecutionDeadline = {
+      expiresAt: this.clock.now() + this.options.requestTimeoutMs,
+      dispatched: false,
+    };
     const maxRows = parseInt(process.env.AXL_MCP_MAX_AUTOPAGINATE ?? '10000', 10) || 10000;
     const pageSize = 1000;
     const allRows: unknown[] = [];
@@ -119,14 +376,27 @@ export class AxlAPIService {
         first: String(pageSize),
       };
 
-      const result = await this.executeOperation(
-        credentials,
-        operation,
-        pageData,
-        opts,
-        tlsMode,
-        executionPolicy
-      );
+      const result =
+        this.executeOperation === AxlAPIService.prototype.executeOperation
+          ? await this.executeOperationWithinDeadline(
+              credentials,
+              operation,
+              pageData,
+              opts,
+              tlsMode,
+              executionPolicy,
+              deadline,
+              effectiveShutdownSignal
+            )
+          : await this.executeOperation(
+              credentials,
+              operation,
+              pageData,
+              opts,
+              tlsMode,
+              executionPolicy,
+              effectiveShutdownSignal
+            );
       const pageRows = extractRows(result);
 
       allRows.push(...pageRows);

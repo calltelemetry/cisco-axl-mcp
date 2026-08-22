@@ -1,4 +1,7 @@
-import type { AxlAPIService } from '../services/axl/index';
+import type { AxlRunner as AxlRunnerContract } from '../lib/axl-runner';
+import type { ResolvedMcpConfig } from '../lib/tool-config';
+
+export type { AxlRunner } from '../lib/axl-runner';
 
 export interface ToolAnnotations {
   /** Human-readable title for display purposes. */
@@ -31,7 +34,12 @@ export interface ToolResult {
   }>;
 }
 
-export type ToolHandler = (name: string, args: unknown, axlAPI: AxlAPIService) => Promise<ToolResult | null>;
+export type ToolHandler = (
+  name: string,
+  args: unknown,
+  runner: AxlRunnerContract,
+  config?: ResolvedMcpConfig
+) => Promise<ToolResult | null>;
 
 export function jsonResponse(data: unknown): ToolResult {
   return {
@@ -48,4 +56,3 @@ export interface ToolModule {
   tools: ToolDefinition[];
   handleTool: ToolHandler;
 }
-

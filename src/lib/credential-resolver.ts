@@ -1,6 +1,12 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { isSupportedCucmVersion, SUPPORTED_CUCM_VERSIONS } from './version-manager';
 import type { CucmCredentials, ToolCredentialOverrides } from '../types/credentials';
+import { AxlPolicyError } from '../types/axl/errors';
+
+export interface CredentialResolutionOptions {
+  /** Compatibility-only support for model-visible per-request CUCM credentials. */
+  allowInlineCredentials?: boolean;
+}
 
 export class CredentialResolutionError extends McpError {
   constructor(
@@ -14,8 +20,20 @@ export class CredentialResolutionError extends McpError {
 
 export function resolveCredentials(
   overrides: ToolCredentialOverrides,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  options: CredentialResolutionOptions = {}
 ): CucmCredentials {
+  if (
+    !options.allowInlineCredentials &&
+    (overrides.cucm_host !== undefined ||
+      overrides.cucm_username !== undefined ||
+      overrides.cucm_password !== undefined)
+  ) {
+    throw new AxlPolicyError(
+      'AXL_INLINE_CREDENTIALS_DISABLED',
+      'Inline CUCM credentials are disabled; configure CUCM_HOST, CUCM_USERNAME, and CUCM_PASSWORD in the MCP host environment'
+    );
+  }
   const host = overrides.cucm_host ?? env.CUCM_HOST;
   const username = overrides.cucm_username ?? env.CUCM_USERNAME;
   const password = overrides.cucm_password ?? env.CUCM_PASSWORD;

@@ -7,8 +7,12 @@ import {
   renameSync,
   statSync,
 } from 'node:fs';
+import { appendFile, chmod, mkdir, rename, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { emitAxlDiagnostic } from './runtime-diagnostics';
+import { AxlPolicyError } from './policy-error';
 
 export interface AuditEntry {
   ts: string;
@@ -19,6 +23,8 @@ export interface AuditEntry {
   response?: unknown;
   rows?: number;
   error?: string;
+  errorCode?: string;
+  category?: string;
   attempt?: number;
 }
 
@@ -108,7 +114,7 @@ function redactString(value: string, sensitiveValues: readonly string[]): string
   );
   redacted = redacted.replace(/\b(Basic|Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***');
   redacted = redacted.replace(
-    /(\b(?:password|passwd|pwd|passcode|pass|pin|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
+    /(\b(?:host|hostname|password|passwd|pwd|passcode|pass|pin|secret|token|api[_-]?key|access[_-]?key|secret[_-]?key|username|user|login|credential|creds)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&,<]+)/gi,
     '$1***'
   );
   return redacted;
@@ -188,7 +194,8 @@ export function sanitizeError(error: unknown, sensitiveValues: readonly string[]
     typeof details.message === 'string'
       ? details.message
       : redactString(error instanceof Error ? error.message : String(error), sensitiveValues);
-  const sanitized = new Error(message);
+  const sanitized =
+    error instanceof AxlPolicyError ? new AxlPolicyError(error.code, message) : new Error(message);
   sanitized.name =
     typeof details.name === 'string' ? details.name : error instanceof Error ? error.name : 'Error';
   if (typeof details.stack === 'string') sanitized.stack = details.stack;
@@ -204,11 +211,28 @@ const DEFAULT_AUDIT_DIR = join(homedir(), '.cisco-axl-mcp', 'audit');
 const DEFAULT_MAX_SIZE_BYTES =
   (parseInt(process.env.AXL_MCP_AUDIT_MAX_SIZE_MB ?? '10', 10) || 10) * 1024 * 1024;
 const THROTTLE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_TRACKED_THROTTLE_HOSTS = 64;
+const MAX_AUDIT_QUEUE_ENTRIES = 256;
+const MAX_AUDIT_QUEUE_BYTES = 1024 * 1024;
+const MAX_AUDIT_ENTRY_BYTES = 16 * 1024;
 
 let auditDir: string = DEFAULT_AUDIT_DIR;
+const throttleEventsByHost = new Map<string, number[]>();
+interface QueuedAuditEntry {
+  readonly host: string;
+  readonly entry: AuditEntry;
+  readonly dir: string;
+  readonly byteLength: number;
+}
+const auditQueue: QueuedAuditEntry[] = [];
+let queuedAuditBytes = 0;
+let auditProcessing: Promise<void> | undefined;
+let auditDropped = 0;
+let auditFailures = 0;
 
 export function setAuditDir(dir: string): void {
   auditDir = dir;
+  throttleEventsByHost.clear();
 }
 
 export function getAuditDir(): string {
@@ -220,14 +244,19 @@ function ensureDir(dir: string): void {
   chmodSync(dir, 0o700);
 }
 
-function hostFilePath(host: string): string {
-  const safe = host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-  return join(auditDir, `${safe}.jsonl`);
+function auditHostIdentity(host: string): string {
+  return createHash('sha256').update(host).digest('hex');
+}
+
+/** A stable opaque audit filename that never exposes the configured CUCM host. */
+export function auditLogPathForHost(host: string): string {
+  return join(auditDir, `cluster-${auditHostIdentity(host)}.jsonl`);
 }
 
 export function writeAuditEntry(host: string, entry: AuditEntry): void {
+  recordThrottleState(host, entry);
   ensureDir(auditDir);
-  const filePath = hostFilePath(host);
+  const filePath = auditLogPathForHost(host);
   const line =
     JSON.stringify(
       redactCredentials(entry, [], { kind: 'audit-entry', operation: entry.operation })
@@ -235,6 +264,106 @@ export function writeAuditEntry(host: string, entry: AuditEntry): void {
   appendFileSync(filePath, line, { encoding: 'utf-8', mode: 0o600 });
   chmodSync(filePath, 0o600);
   rotateIfNeeded(filePath);
+}
+
+async function writeAuditEntryAsync(host: string, entry: AuditEntry, dir: string): Promise<void> {
+  const filePath = join(dir, `cluster-${auditHostIdentity(host)}.jsonl`);
+  const line =
+    JSON.stringify(
+      redactCredentials(entry, [], { kind: 'audit-entry', operation: entry.operation })
+    ) + '\n';
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  await appendFile(filePath, line, { encoding: 'utf-8', mode: 0o600 });
+  await chmod(filePath, 0o600);
+  const file = await stat(filePath);
+  if (file.size > DEFAULT_MAX_SIZE_BYTES) {
+    await rename(filePath, filePath + '.1');
+    await chmod(filePath + '.1', 0o600);
+  }
+}
+
+function queueAuditEntry(host: string, entry: AuditEntry): void {
+  recordThrottleState(host, entry);
+  const serialized = JSON.stringify(entry);
+  const byteLength = Buffer.byteLength(serialized, 'utf8');
+  const boundedEntry: AuditEntry =
+    byteLength <= MAX_AUDIT_ENTRY_BYTES
+      ? entry
+      : {
+          ts: entry.ts,
+          operation: entry.operation,
+          durationMs: entry.durationMs,
+          status: entry.status,
+          ...(entry.rows !== undefined && { rows: entry.rows }),
+          ...(entry.attempt !== undefined && { attempt: entry.attempt }),
+          ...(entry.error && { error: entry.error.slice(0, 1024) }),
+          ...(entry.errorCode && { errorCode: entry.errorCode.slice(0, 128) }),
+          ...(entry.category && { category: entry.category.slice(0, 128) }),
+        };
+  const retainedBytes = Math.min(
+    Buffer.byteLength(JSON.stringify(boundedEntry), 'utf8'),
+    MAX_AUDIT_ENTRY_BYTES
+  );
+  if (
+    auditQueue.length >= MAX_AUDIT_QUEUE_ENTRIES ||
+    queuedAuditBytes + retainedBytes > MAX_AUDIT_QUEUE_BYTES
+  ) {
+    auditDropped = Math.min(auditDropped + 1, MAX_AUDIT_QUEUE_ENTRIES);
+    emitAxlDiagnostic('audit_queue_dropped');
+    return;
+  }
+  auditQueue.push({ host, entry: boundedEntry, dir: auditDir, byteLength: retainedBytes });
+  queuedAuditBytes += retainedBytes;
+  if (!auditProcessing) auditProcessing = drainAuditQueue();
+}
+
+async function drainAuditQueue(): Promise<void> {
+  while (auditQueue.length > 0) {
+    const queued = auditQueue.shift();
+    if (!queued) continue;
+    queuedAuditBytes -= queued.byteLength;
+    try {
+      await writeAuditEntryAsync(queued.host, queued.entry, queued.dir);
+    } catch {
+      auditFailures = Math.min(auditFailures + 1, MAX_AUDIT_QUEUE_ENTRIES);
+      emitAxlDiagnostic('audit_write_failed');
+    }
+  }
+  auditProcessing = undefined;
+}
+
+/** Flush queued metadata before controlled process shutdown and surface bounded loss. */
+export async function flushAuditLog(): Promise<void> {
+  await auditProcessing;
+  const dropped = auditDropped;
+  const failures = auditFailures;
+  auditDropped = 0;
+  auditFailures = 0;
+  if (dropped > 0 || failures > 0) {
+    throw new Error(`Audit persistence incomplete: dropped=${dropped}, failures=${failures}`);
+  }
+}
+
+function recordThrottleState(host: string, entry: AuditEntry): void {
+  const cutoff = Date.now() - THROTTLE_WINDOW_MS;
+  const existing = throttleEventsByHost.get(host) ?? [];
+  const recent = existing.filter(timestamp => timestamp >= cutoff);
+  if (entry.status === 'throttled') {
+    const timestamp = new Date(entry.ts).getTime();
+    if (Number.isFinite(timestamp) && timestamp >= cutoff) recent.push(timestamp);
+  }
+  setThrottleState(host, recent);
+}
+
+function setThrottleState(host: string, timestamps: number[]): void {
+  throttleEventsByHost.delete(host);
+  throttleEventsByHost.set(host, timestamps);
+  while (throttleEventsByHost.size > MAX_TRACKED_THROTTLE_HOSTS) {
+    const oldestHost = throttleEventsByHost.keys().next().value as string | undefined;
+    if (oldestHost === undefined) break;
+    throttleEventsByHost.delete(oldestHost);
+  }
 }
 
 function rotateIfNeeded(filePath: string): void {
@@ -249,11 +378,19 @@ function rotateIfNeeded(filePath: string): void {
 }
 
 export function getRecentThrottleCount(host: string): number {
-  const filePath = hostFilePath(host);
+  const cached = throttleEventsByHost.get(host);
+  if (cached !== undefined) {
+    const cutoff = Date.now() - THROTTLE_WINDOW_MS;
+    const recent = cached.filter(timestamp => timestamp >= cutoff);
+    setThrottleState(host, recent);
+    return recent.length;
+  }
+
+  const filePath = auditLogPathForHost(host);
   if (!existsSync(filePath)) return 0;
 
   const cutoff = Date.now() - THROTTLE_WINDOW_MS;
-  let count = 0;
+  const timestamps: number[] = [];
   try {
     const lines = readFileSync(filePath, 'utf-8').trim().split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -261,8 +398,9 @@ export function getRecentThrottleCount(host: string): number {
       if (!line) continue;
       try {
         const entry = JSON.parse(line) as AuditEntry;
-        if (new Date(entry.ts).getTime() < cutoff) break;
-        if (entry.status === 'throttled') count++;
+        const timestamp = new Date(entry.ts).getTime();
+        if (timestamp < cutoff) break;
+        if (entry.status === 'throttled') timestamps.push(timestamp);
       } catch {
         // Skip malformed lines without losing later valid audit history.
       }
@@ -270,7 +408,8 @@ export function getRecentThrottleCount(host: string): number {
   } catch {
     return 0;
   }
-  return count;
+  setThrottleState(host, timestamps);
+  return timestamps.length;
 }
 
 export function getAdaptiveDelay(host: string): number {
@@ -294,6 +433,8 @@ export function recordOperation(
     request?: unknown;
     response?: unknown;
     sensitiveValues?: string[];
+    errorCode?: string;
+    category?: string;
   }
 ): AuditEntry {
   const level = getAuditLogLevel();
@@ -315,6 +456,8 @@ export function recordOperation(
     status,
     ...(result.rows !== undefined && { rows: result.rows }),
     ...(result.error && { error: redactString(result.error, result.sensitiveValues ?? []) }),
+    ...(result.errorCode && { errorCode: result.errorCode }),
+    ...(result.category && { category: result.category }),
     ...(result.attempt !== undefined && { attempt: result.attempt }),
   };
 
@@ -328,6 +471,6 @@ export function recordOperation(
     });
   }
 
-  writeAuditEntry(host, entry);
+  queueAuditEntry(host, entry);
   return entry;
 }

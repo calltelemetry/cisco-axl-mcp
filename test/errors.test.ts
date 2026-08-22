@@ -47,4 +47,20 @@ describe('toMcpError', () => {
     expect(result.code).toBe(ErrorCode.InternalError);
     expect(result.message).toContain('raw string error');
   });
+
+  it('redacts host, username, and password values from serialized errors', () => {
+    const credentials = {
+      host: 'private-cluster.internal',
+      username: 'private-user',
+      password: 'private-password',
+    };
+    const result = toMcpError(
+      new Error(
+        `transport failed host=${credentials.host} username=${credentials.username} password=${credentials.password}`
+      )
+    );
+    const serialized = JSON.stringify(result, Object.getOwnPropertyNames(result));
+
+    for (const value of Object.values(credentials)) expect(serialized).not.toContain(value);
+  });
 });

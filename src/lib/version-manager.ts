@@ -4,4 +4,3 @@ export type SupportedCucmVersion = (typeof SUPPORTED_CUCM_VERSIONS)[number];
 export function isSupportedCucmVersion(version: string): version is SupportedCucmVersion {
   return (SUPPORTED_CUCM_VERSIONS as readonly string[]).includes(version);
 }
-

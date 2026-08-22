@@ -66,11 +66,9 @@ __metadata:
     vite: "npm:^8.0.14"
     vitest: "npm:^4.1.7"
     zod: "npm:^4.4.3"
-  peerDependencies:
-    typescript: ^5.0.0 || ^6.0.0
   bin:
-    cisco-axl: build/cli.js
     cisco-axl-mcp: build/index.js
+    cisco-axl-mcp-cli: build/cli.js
   languageName: unknown
   linkType: soft
 

@@ -27,8 +27,23 @@ describe('resolveCredentials', () => {
     });
   });
 
+  it('rejects inline host, username, and password overrides unless compatibility is enabled', () => {
+    const secret = 'inline-password-that-must-not-leak';
+
+    expect(() => resolveCredentials({ cucm_password: secret })).toThrowError(
+      expect.objectContaining({ code: 'AXL_INLINE_CREDENTIALS_DISABLED' })
+    );
+    try {
+      resolveCredentials({ cucm_password: secret });
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+
   it('override cucm_host takes precedence over env', () => {
-    const result = resolveCredentials({ cucm_host: 'other.local' });
+    const result = resolveCredentials({ cucm_host: 'other.local' }, process.env, {
+      allowInlineCredentials: true,
+    });
     expect(result.host).toBe('other.local');
   });
 
@@ -38,12 +53,16 @@ describe('resolveCredentials', () => {
   });
 
   it('override cucm_username takes precedence over env', () => {
-    const result = resolveCredentials({ cucm_username: 'override_user' });
+    const result = resolveCredentials({ cucm_username: 'override_user' }, process.env, {
+      allowInlineCredentials: true,
+    });
     expect(result.username).toBe('override_user');
   });
 
   it('override cucm_password takes precedence over env', () => {
-    const result = resolveCredentials({ cucm_password: 'override_pass' });
+    const result = resolveCredentials({ cucm_password: 'override_pass' }, process.env, {
+      allowInlineCredentials: true,
+    });
     expect(result.password).toBe('override_pass');
   });
 

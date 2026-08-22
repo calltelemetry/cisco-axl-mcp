@@ -1,9 +1,14 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import CiscoAxlService from 'cisco-axl';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { setAuditDir, writeAuditEntry } from '../src/lib/audit-log';
+import {
+  auditLogPathForHost,
+  flushAuditLog,
+  setAuditDir,
+  writeAuditEntry,
+} from '../src/lib/audit-log';
 
 // Mock getAxlClient to avoid real CUCM connections
 vi.mock('../src/lib/axl-client', async importOriginal => {
@@ -20,12 +25,18 @@ vi.mock('../src/lib/axl-client', async importOriginal => {
 
 import { AxlAPIService, STRICT_AXL_EXECUTION_POLICY } from '../src/services/axl/index';
 import { runCli } from '../src/cli';
-import { handleTool } from '../src/tools/index';
+import { AXL_RUNNER_PACKAGE_VERSION, runAxl } from '../src/lib/axl-runner';
+import { createMutationGrant, MutationGrantReplayStore } from '../src/lib/mutation-grants';
+import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 const { __mockClient: mockClient, getAxlClient: mockGetAxlClient } =
   (await import('../src/lib/axl-client')) as any;
 
 const creds = { host: 'test-host', username: 'admin', password: 'pass', version: '14.0' };
 let tempDir: string;
+
+beforeAll(async () => {
+  await loadAxlVersionArtifacts('14.0');
+});
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'axl-svc-'));
@@ -34,7 +45,8 @@ beforeEach(() => {
   mockClient.executeOperation.mockResolvedValue({ return: { phone: [{ name: 'SEP111' }] } });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushAuditLog();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -47,27 +59,561 @@ describe('AxlAPIService.executeOperation', () => {
 
     await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
 
-    expect(mockGetAxlClient).toHaveBeenCalledWith(creds, 'insecure');
+    expect(mockGetAxlClient).toHaveBeenCalledWith(
+      creds,
+      'insecure',
+      expect.objectContaining({ onDiagnostic: expect.any(Function) })
+    );
   });
 
-  it('calls getAxlClient and returns result', async () => {
+  it('passes remaining deadline budget, cancellation signal, and dispatch callback to the client', async () => {
+    const dispatchMarked = vi.fn();
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: { markDispatched(): void }
+      ) => {
+        lifecycle.markDispatched();
+        dispatchMarked();
+        return Promise.resolve({ return: { phone: [{ name: 'SEP111' }] } });
+      }
+    );
+
     const service = new AxlAPIService();
     const result = await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
     expect(result).toEqual({ return: { phone: [{ name: 'SEP111' }] } });
-    expect(mockClient.executeOperation).toHaveBeenCalledWith(
-      'getPhone',
-      { name: 'SEP111' },
-      undefined
+    const [operation, tags, options, lifecycle] = mockClient.executeOperation.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+      undefined,
+      { timeoutMs: number; signal: AbortSignal; markDispatched(): void },
+    ];
+    expect(operation).toBe('getPhone');
+    expect(tags).toEqual({ name: 'SEP111' });
+    expect(options).toBeUndefined();
+    expect(lifecycle.timeoutMs).toBeGreaterThan(0);
+    expect(lifecycle.timeoutMs).toBeLessThanOrEqual(30_000);
+    expect(lifecycle.signal).toBeInstanceOf(AbortSignal);
+    expect(lifecycle.signal.aborted).toBe(false);
+    expect(dispatchMarked).toHaveBeenCalledOnce();
+  });
+
+  it('classifies a read that exceeds its one end-to-end deadline without retrying it', async () => {
+    vi.useFakeTimers();
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: { markDispatched(): void }
+      ) => {
+        lifecycle.markDispatched();
+        return new Promise(resolve => setTimeout(() => resolve({ return: { phone: [] } }), 20));
+      }
     );
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+      });
+      const pending = service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_READ_TIMEOUT' });
+      expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never extends a read deadline across retry backoff', async () => {
+    vi.useFakeTimers();
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '3';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '8';
+    mockClient.executeOperation.mockRejectedValue(new Error('503 Service Unavailable'));
+    const startedAt = Date.now();
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+      });
+      const pending = service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_REQUEST_TIMEOUT_NOT_DISPATCHED' });
+      expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+      expect(Date.now() - startedAt).toBe(10);
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      vi.useRealTimers();
+    }
+  });
+
+  it('audits a timeout that expires during adaptive delay before dispatch', async () => {
+    vi.useFakeTimers();
+    writeAuditEntry(creds.host, {
+      ts: new Date().toISOString(),
+      operation: 'listPhone',
+      durationMs: 1,
+      status: 'throttled',
+    });
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+      });
+      const pending = service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_REQUEST_TIMEOUT_NOT_DISPATCHED' });
+      await flushAuditLog();
+
+      const entries = (await import('node:fs'))
+        .readFileSync(auditLogPathForHost(creds.host), 'utf-8')
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line));
+      expect(entries).toHaveLength(2);
+      expect(entries[1]).toMatchObject({ operation: 'getPhone', status: 'error' });
+      expect(entries[1].error).toContain('AXL request deadline elapsed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a queued ten-second adaptive delay without dispatching or leaving late audit work', async () => {
+    vi.useFakeTimers();
+    for (let index = 0; index < 3; index++) {
+      writeAuditEntry(creds.host, {
+        ts: new Date().toISOString(),
+        operation: 'listPhone',
+        durationMs: 1,
+        status: 'throttled',
+      });
+    }
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const service = new AxlAPIService({
+      tlsMode: 'secure',
+      requestTimeoutMs: 60_000,
+      clientCacheMaxEntries: 2,
+    });
+    const outcome = service
+      .executeOperation(
+        creds,
+        'getPhone',
+        { name: 'SEP111' },
+        undefined,
+        'secure',
+        STRICT_AXL_EXECUTION_POLICY,
+        controller.signal
+      )
+      .catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+
+    await expect(outcome).resolves.toMatchObject({ code: 'AXL_REQUEST_CANCELLED' });
+    expect(mockClient.executeOperation).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+    await flushAuditLog();
+    const beforeAdvance = (await import('node:fs')).readFileSync(
+      auditLogPathForHost(creds.host),
+      'utf-8'
+    );
+    expect(JSON.parse(beforeAdvance.trim().split('\n').at(-1) ?? '{}')).toMatchObject({
+      status: 'error',
+      errorCode: 'AXL_REQUEST_CANCELLED',
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushAuditLog();
+    expect((await import('node:fs')).readFileSync(auditLogPathForHost(creds.host), 'utf-8')).toBe(
+      beforeAdvance
+    );
+    removeListener.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('cancels retry backoff promptly after one dispatch without leaving a later retry', async () => {
+    vi.useFakeTimers();
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '3';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '10000';
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: { markDispatched(): void }
+      ) => {
+        lifecycle.markDispatched();
+        return Promise.reject(new Error('503 Service Unavailable'));
+      }
+    );
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const service = new AxlAPIService({
+      tlsMode: 'secure',
+      requestTimeoutMs: 60_000,
+      clientCacheMaxEntries: 2,
+    });
+    const outcome = service
+      .executeOperation(
+        creds,
+        'getPhone',
+        { name: 'SEP111' },
+        undefined,
+        'secure',
+        STRICT_AXL_EXECUTION_POLICY,
+        controller.signal
+      )
+      .catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+    controller.abort();
+
+    await expect(outcome).resolves.toMatchObject({ code: 'AXL_REQUEST_CANCELLED' });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
+    await flushAuditLog();
+    const beforeAdvance = (await import('node:fs')).readFileSync(
+      auditLogPathForHost(creds.host),
+      'utf-8'
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushAuditLog();
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+    expect((await import('node:fs')).readFileSync(auditLogPathForHost(creds.host), 'utf-8')).toBe(
+      beforeAdvance
+    );
+    removeListener.mockRestore();
+    if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+    else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+    if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+    vi.useRealTimers();
+  });
+
+  it('classifies a timed-out mutation as unknown after dispatch', async () => {
+    vi.useFakeTimers();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: { markDispatched(): void }
+      ) => {
+        lifecycle.markDispatched();
+        return new Promise(resolve => setTimeout(() => resolve({ return: { ok: true } }), 20));
+      }
+    );
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+      });
+      const pending = service.executeOperation(creds, 'updatePhone', { name: 'SEP111' });
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+      expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+      await flushAuditLog();
+      const entries = (await import('node:fs'))
+        .readFileSync(auditLogPathForHost(creds.host), 'utf-8')
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line));
+      expect(entries.at(-1)).toMatchObject({
+        status: 'error',
+        errorCode: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+        category: 'AXL_MUTATION_OUTCOME_UNKNOWN',
+      });
+      expect(stderr.mock.calls.flat().join('')).toContain('axl_timeout_mutation_outcome_unknown');
+    } finally {
+      stderr.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts an in-flight transport when the shared deadline expires', async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: {
+          markDispatched(): void;
+          signal: AbortSignal;
+        }
+      ) => {
+        lifecycle.markDispatched();
+        return new Promise((_resolve, reject) => {
+          lifecycle.signal.addEventListener('abort', () => {
+            aborted = true;
+            reject(new Error('request aborted'));
+          });
+        });
+      }
+    );
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+      });
+      const pending = service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_READ_TIMEOUT' });
+      expect(aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles a never-ending dispatched transport when the controlled shutdown signal aborts', async () => {
+    let transportAborted = false;
+    let resolveTransport!: (value: unknown) => void;
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: {
+          markDispatched(): void;
+          signal: AbortSignal;
+        }
+      ) => {
+        lifecycle.markDispatched();
+        lifecycle.signal.addEventListener('abort', () => {
+          transportAborted = true;
+        });
+        return new Promise(resolve => {
+          resolveTransport = resolve;
+        });
+      }
+    );
+    const controller = new AbortController();
+    const service = new AxlAPIService({
+      tlsMode: 'secure',
+      requestTimeoutMs: 60_000,
+      clientCacheMaxEntries: 2,
+    });
+    const outcome = service
+      .executeOperation(
+        creds,
+        'getPhone',
+        { name: 'SEP111' },
+        undefined,
+        'secure',
+        STRICT_AXL_EXECUTION_POLICY,
+        controller.signal
+      )
+      .catch((error: unknown) => error);
+
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(
+      Promise.race([
+        outcome,
+        new Promise(resolve => setTimeout(() => resolve('still-pending'), 25)),
+      ])
+    ).resolves.toMatchObject({ code: 'AXL_REQUEST_CANCELLED' });
+    expect(transportAborted).toBe(true);
+    await flushAuditLog();
+    const beforeLateTransportResolution = (await import('node:fs')).readFileSync(
+      auditLogPathForHost(creds.host),
+      'utf-8'
+    );
+    expect(
+      JSON.parse(beforeLateTransportResolution.trim().split('\n').at(-1) ?? '{}')
+    ).toMatchObject({
+      status: 'error',
+      errorCode: 'AXL_REQUEST_CANCELLED',
+    });
+    resolveTransport({ return: { phone: [{ name: 'late-result' }] } });
+    await Promise.resolve();
+    await Promise.resolve();
+    await flushAuditLog();
+    expect((await import('node:fs')).readFileSync(auditLogPathForHost(creds.host), 'utf-8')).toBe(
+      beforeLateTransportResolution
+    );
+  });
+
+  it.each([
+    [
+      'successful dispatch',
+      () => mockClient.executeOperation.mockResolvedValue({ return: { phone: [] } }),
+    ],
+    [
+      'failed dispatch',
+      () => mockClient.executeOperation.mockRejectedValue(new Error('401 Unauthorized')),
+    ],
+  ])('clears its deadline timer after a %s', async (_label, arrange) => {
+    vi.useFakeTimers();
+    arrange();
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 1_000,
+        clientCacheMaxEntries: 2,
+      });
+      await service.executeOperation(creds, 'getPhone', { name: 'SEP111' }).catch(() => undefined);
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('redacts resolved host, username, and password from a normal response', async () => {
+    const privateCredentials = {
+      host: 'private-cluster.internal',
+      username: 'private-user',
+      password: 'private-password',
+      version: '14.0',
+    };
+    mockClient.executeOperation.mockResolvedValue({
+      return: {
+        endpoint: `https://${privateCredentials.host}:8443/axl/`,
+        diagnostics: `${privateCredentials.username}:${privateCredentials.password}`,
+      },
+    });
+
+    const result = await new AxlAPIService().executeOperation(privateCredentials, 'getPhone', {
+      name: 'SEP111',
+    });
+    const serialized = JSON.stringify(result);
+
+    for (const value of Object.values(privateCredentials).slice(0, 3)) {
+      expect(serialized).not.toContain(value);
+    }
+  });
+
+  it('redacts resolved host, username, and password from a single transport error', async () => {
+    const privateCredentials = {
+      host: 'private-cluster.internal',
+      username: 'private-user',
+      password: 'private-password',
+      version: '14.0',
+    };
+    mockClient.executeOperation.mockRejectedValue(
+      new Error(
+        `401 authentication failed for ${privateCredentials.host} as ${privateCredentials.username}:${privateCredentials.password}`
+      )
+    );
+
+    const failure = await new AxlAPIService()
+      .executeOperation(privateCredentials, 'getPhone', { name: 'SEP111' })
+      .catch((error: unknown) => error);
+    const serialized = JSON.stringify(failure, Object.getOwnPropertyNames(failure as object));
+
+    for (const value of Object.values(privateCredentials).slice(0, 3)) {
+      expect(serialized).not.toContain(value);
+    }
+  });
+
+  it('redacts resolved credentials from auto-page failures', async () => {
+    const privateCredentials = {
+      host: 'private-cluster.internal',
+      username: 'private-user',
+      password: 'private-password',
+      version: '14.0',
+    };
+    mockClient.executeOperation.mockRejectedValue(
+      new Error(
+        `https://${privateCredentials.username}:${privateCredentials.password}@${privateCredentials.host}:8443/axl/ failed`
+      )
+    );
+
+    const failure = await new AxlAPIService()
+      .listAll(privateCredentials, 'listPhone', { searchCriteria: { name: '%' } })
+      .catch((error: unknown) => error);
+    const serialized = JSON.stringify(failure, Object.getOwnPropertyNames(failure as object));
+
+    for (const value of Object.values(privateCredentials).slice(0, 3)) {
+      expect(serialized).not.toContain(value);
+    }
+  });
+
+  it('redacts resolved credentials from retry audit entries and uses an opaque audit path', async () => {
+    const privateCredentials = {
+      host: 'private-cluster.internal',
+      username: 'private-user',
+      password: 'private-password',
+      version: '14.0',
+    };
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '1';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    mockClient.executeOperation.mockRejectedValue(
+      new Error(
+        `503 https://${privateCredentials.username}:${privateCredentials.password}@${privateCredentials.host}:8443/axl/ failed`
+      )
+    );
+
+    try {
+      await new AxlAPIService()
+        .executeOperation(privateCredentials, 'getPhone', { name: 'SEP111' })
+        .catch(() => undefined);
+      await flushAuditLog();
+      const path = auditLogPathForHost(privateCredentials.host);
+      const content = (await import('node:fs')).readFileSync(path, 'utf-8');
+      expect(content).toContain('"status":"retry"');
+      expect(path).not.toContain(privateCredentials.host);
+      for (const value of Object.values(privateCredentials).slice(0, 3)) {
+        expect(content).not.toContain(value);
+      }
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+    }
   });
 
   it('records successful operation to audit log', async () => {
     const service = new AxlAPIService();
     await service.executeOperation(creds, 'listPhone', { searchCriteria: { name: '%' } });
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -88,9 +634,9 @@ describe('AxlAPIService.executeOperation', () => {
       '401 Unauthorized'
     );
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -114,9 +660,9 @@ describe('AxlAPIService.executeOperation', () => {
     const service = new AxlAPIService();
     await expect(service.executeOperation(creds, 'listPhone', {})).rejects.toThrow('Memory');
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -174,8 +720,9 @@ describe('AxlAPIService.executeOperation', () => {
       });
       expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
 
+      await flushAuditLog();
       const { readFileSync } = await import('node:fs');
-      const content = readFileSync(join(tempDir, `${creds.host}.jsonl`), 'utf-8');
+      const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
       expect(content).not.toContain(secret);
       expect(content).toContain('"status":"retry"');
     } finally {
@@ -240,46 +787,98 @@ describe('AxlAPIService.executeOperation', () => {
     }
   });
 
-  it('preserves legacy retry and original error behavior for direct MCP mutations', async () => {
-    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
-    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
-    const originalEnabledObjects = process.env.AXL_MCP_ENABLED_OBJECTS;
-    const originalConfig = process.env.AXL_MCP_CONFIG;
-    process.env.AXL_MCP_MAX_RETRIES = '1';
-    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
-    delete process.env.AXL_MCP_ENABLED_OBJECTS;
-    delete process.env.AXL_MCP_CONFIG;
-    mockClient.executeOperation.mockRejectedValue(new Error('503 Service Unavailable'));
+  it('keeps an ambiguous MCP mutation single-dispatch, redacted, and grant-consumed', async () => {
+    const request = {
+      credentials: { ...creds, version: '14.0' },
+      tlsMode: 'secure' as const,
+      operation: 'updatePhone',
+      data: { name: 'SEP111', description: 'policy write' },
+    };
+    const replayStore = new MutationGrantReplayStore();
+    const mutationGrant = await createMutationGrant({
+      request,
+      packageVersion: AXL_RUNNER_PACKAGE_VERSION,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      id: 'mcp-ambiguous-write',
+    });
+    mockClient.executeOperation.mockRejectedValue(
+      Object.assign(new Error(`timeout while authenticating ${creds.password}`), {
+        code: 'ETIMEDOUT',
+      })
+    );
 
-    try {
-      const failure = await handleTool(
-        'axl_execute',
-        {
-          cucm_host: creds.host,
-          cucm_username: creds.username,
-          cucm_password: creds.password,
-          cucm_version: '15.0',
-          operation: 'updatePhone',
-          data: { name: 'SEP111', description: 'legacy MCP mutation' },
-        },
-        new AxlAPIService()
-      ).catch((error: unknown) => error);
+    const options = {
+      request,
+      source: 'mcp' as const,
+      validationMode: 'strict' as const,
+      mutationGrant,
+    };
+    const dependencies = {
+      service: new AxlAPIService(),
+      replayStore,
+      packageVersion: AXL_RUNNER_PACKAGE_VERSION,
+    };
+    const failure = await runAxl(options, dependencies).catch((error: unknown) => error);
 
-      expect(failure).toMatchObject({
-        message: expect.stringContaining('503 Service Unavailable'),
-      });
-      expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
-      expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
-    } finally {
-      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
-      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
-      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
-      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
-      if (originalEnabledObjects === undefined) delete process.env.AXL_MCP_ENABLED_OBJECTS;
-      else process.env.AXL_MCP_ENABLED_OBJECTS = originalEnabledObjects;
-      if (originalConfig === undefined) delete process.env.AXL_MCP_CONFIG;
-      else process.env.AXL_MCP_CONFIG = originalConfig;
-    }
+    expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+    expect((failure as Error).message).toContain('reconciliation');
+    expect((failure as Error).message).not.toContain('retry this request');
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+
+    await flushAuditLog();
+    const { readFileSync } = await import('node:fs');
+    const auditEntries = readFileSync(auditLogPathForHost(creds.host), 'utf-8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    expect(auditEntries).toHaveLength(1);
+    expect(auditEntries[0]).toMatchObject({ operation: 'updatePhone', status: 'error' });
+    expect(JSON.stringify(auditEntries)).not.toContain(creds.password);
+
+    await expect(runAxl(options, dependencies)).rejects.toMatchObject({
+      code: 'AXL_MUTATION_GRANT_REPLAYED',
+    });
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a grant-approved SQL query single-dispatch with an unknown outcome', async () => {
+    const request = {
+      credentials: { ...creds, version: '14.0' },
+      tlsMode: 'secure' as const,
+      operation: 'executeSQLQuery',
+      data: { sql: "SELECT name FROM v_device WHERE name = 'SEP111'" },
+    };
+    const replayStore = new MutationGrantReplayStore();
+    const mutationGrant = await createMutationGrant({
+      request,
+      packageVersion: AXL_RUNNER_PACKAGE_VERSION,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      id: 'mcp-ambiguous-sql-query',
+    });
+    mockClient.executeOperation.mockRejectedValue(
+      Object.assign(new Error(`timeout while querying ${creds.password}`), { code: 'ETIMEDOUT' })
+    );
+
+    const options = {
+      request,
+      source: 'mcp' as const,
+      validationMode: 'strict' as const,
+      mutationGrant,
+    };
+    const dependencies = {
+      service: new AxlAPIService(),
+      replayStore,
+      packageVersion: AXL_RUNNER_PACKAGE_VERSION,
+    };
+    const failure = await runAxl(options, dependencies).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+    expect((failure as Error).message).toContain('reconciliation');
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+    await expect(runAxl(options, dependencies)).rejects.toMatchObject({
+      code: 'AXL_MUTATION_GRANT_REPLAYED',
+    });
+    expect(mockClient.executeOperation).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -423,7 +1022,6 @@ describe('AxlAPIService.executeOperation', () => {
     ['12.0', 'listAuthzKeys'],
     ['15.0', 'getPhone'],
     ['15.0', 'listPhone'],
-    ['15.0', 'executeSQLQueryInactive'],
   ] as const)(
     'retries selected-version read %s %s for a nested transport code',
     async (version, operation) => {
@@ -474,7 +1072,7 @@ describe('AxlAPIService.executeOperation', () => {
   });
 
   it.each(['12.5', '14.0', '15.0'])(
-    'retries executeSQLQueryInactive as a CUCM %s read and preserves the transport failure',
+    'treats executeSQLQueryInactive as an ambiguous CUCM %s mutation with one dispatch',
     async version => {
       const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
       const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
@@ -485,14 +1083,20 @@ describe('AxlAPIService.executeOperation', () => {
       try {
         const service = new AxlAPIService();
         const failure = await service
-          .executeOperation({ ...creds, version }, 'executeSQLQueryInactive', {
-            sql: 'select name from device',
-          })
+          .executeOperation(
+            { ...creds, version },
+            'executeSQLQueryInactive',
+            {
+              sql: 'select name from device',
+            },
+            undefined,
+            'secure',
+            STRICT_AXL_EXECUTION_POLICY
+          )
           .catch((error: unknown) => error);
 
-        expect(failure).toMatchObject({ message: '503 Service Unavailable' });
-        expect(failure).not.toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
-        expect(mockClient.executeOperation).toHaveBeenCalledTimes(2);
+        expect(failure).toMatchObject({ code: 'AXL_MUTATION_OUTCOME_UNKNOWN' });
+        expect(mockClient.executeOperation).toHaveBeenCalledOnce();
       } finally {
         if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
         else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
@@ -537,9 +1141,9 @@ describe('AxlAPIService.executeOperation', () => {
     const service = new AxlAPIService();
     await service.executeOperation(creds, 'listPhone', {});
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -554,9 +1158,9 @@ describe('AxlAPIService.executeOperation', () => {
     const service = new AxlAPIService();
     await service.executeOperation(creds, 'addPhone', { phone: {} });
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -641,9 +1245,9 @@ describe('AxlAPIService.executeOperation', () => {
     const result = await service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
     expect(result).toBeDefined();
 
+    await flushAuditLog();
     const { readFileSync } = await import('node:fs');
-    const safe = creds.host.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const content = readFileSync(join(tempDir, `${safe}.jsonl`), 'utf-8');
+    const content = readFileSync(auditLogPathForHost(creds.host), 'utf-8');
     const entries = content
       .trim()
       .split('\n')
@@ -654,6 +1258,54 @@ describe('AxlAPIService.executeOperation', () => {
 });
 
 describe('AxlAPIService.listAll (integrated)', () => {
+  it('uses one injected monotonic deadline across auto-pagination pages', async () => {
+    vi.useFakeTimers();
+    let monotonicNow = 0;
+    let calls = 0;
+    mockClient.executeOperation.mockImplementation(
+      (
+        _operation: unknown,
+        _tags: unknown,
+        _opts: unknown,
+        lifecycle: { markDispatched(): void }
+      ) => {
+        lifecycle.markDispatched();
+        calls++;
+        return new Promise(resolve =>
+          setTimeout(() => {
+            monotonicNow += 6;
+            resolve({
+              return: {
+                phone:
+                  calls === 1
+                    ? Array.from({ length: 1000 }, (_, index) => ({ name: `P${index}` }))
+                    : [],
+              },
+            });
+          }, 6)
+        );
+      }
+    );
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 10,
+        clientCacheMaxEntries: 2,
+        clock: { now: () => monotonicNow },
+      });
+      const pending = service.listAll(creds, 'listPhone', {});
+      const outcome = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(12);
+
+      await expect(outcome).resolves.toMatchObject({ code: 'AXL_READ_TIMEOUT' });
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('paginates through real executeOperation', async () => {
     let callCount = 0;
     mockClient.executeOperation.mockImplementation(async () => {

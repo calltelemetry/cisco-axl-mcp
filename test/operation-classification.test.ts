@@ -12,12 +12,7 @@ describe('catalog-aware AXL operation classification', () => {
     async version => {
       const artifacts = await loadAxlVersionArtifacts(version);
 
-      for (const operation of [
-        'getPhone',
-        'listPhone',
-        'executeSQLQuery',
-        'executeSQLQueryInactive',
-      ]) {
+      for (const operation of ['getPhone', 'listPhone']) {
         expect(
           isMutationOperation(operation, artifacts.operationMetadata[operation]!),
           operation
@@ -29,6 +24,8 @@ describe('catalog-aware AXL operation classification', () => {
         'addPhone',
         'updatePhone',
         'removePhone',
+        'executeSQLQuery',
+        'executeSQLQueryInactive',
         'executeSQLUpdate',
         'doDeviceReset',
       ]) {
@@ -66,7 +63,8 @@ describe('catalog-aware AXL operation classification', () => {
     expect(isMutationOperationForVersion('listAuthzKeys', '12.0')).toBe(false);
     expect(isMutationOperationForVersion('getAuthzKey', '15.0')).toBe(true);
     expect(isMutationOperationForVersion('getVendorUnknown', '15.0')).toBe(true);
+    expect(isMutationOperationForVersion('executeSQLQuery', '12.0')).toBe(true);
     expect(isMutationOperationForVersion('executeSQLQueryInactive', '12.0')).toBe(true);
-    expect(isMutationOperationForVersion('executeSQLQueryInactive', '15.0')).toBe(false);
+    expect(isMutationOperationForVersion('executeSQLQueryInactive', '15.0')).toBe(true);
   });
 });

@@ -21,4 +21,3 @@ export function getOptionalString(obj: Record<string, unknown>, key: string): st
   if (value === undefined) return undefined;
   return typeof value === 'string' ? value : undefined;
 }
-

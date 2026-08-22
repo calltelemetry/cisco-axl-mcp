@@ -25,7 +25,12 @@ export interface MutationGrant {
   readonly id: string;
   readonly issuedAt: string;
   readonly expiresAt: string;
-  readonly target: { readonly host: string; readonly version: string };
+  /** Opaque, authority-keyed endpoint/principal bindings. Never clear credentials. */
+  readonly target: {
+    readonly endpointDigest: string;
+    readonly principalDigest: string;
+    readonly version: string;
+  };
   readonly operation: string;
   readonly requestDigest: string;
   readonly schemaDigest: string;
@@ -34,6 +39,8 @@ export interface MutationGrant {
 }
 
 type UnsignedMutationGrant = Omit<MutationGrant, 'provenance'>;
+
+const READ_ONLY_SQL_QUERY_OPERATIONS = new Set(['executeSQLQuery', 'executeSQLQueryInactive']);
 
 const UNSIGNED_GRANT_FIELDS = [
   'id',
@@ -129,13 +136,13 @@ function digestString(value: unknown, field: string): string {
 
 function validateUnsignedGrant(value: unknown): UnsignedMutationGrant {
   const grant = readPlainDataRecord(value, 'object', UNSIGNED_GRANT_FIELDS);
-  const target = readPlainDataRecord(grant.target, 'target', ['host', 'version']);
+  const target = readPlainDataRecord(grant.target, 'target', [
+    'endpointDigest',
+    'principalDigest',
+    'version',
+  ]);
   const id = requiredString(grant.id, 'id', 256);
   if (!OPAQUE_ID_PATTERN.test(id)) invalidGrant('id', 'has an unsupported format');
-  const host = requiredString(target.host, 'target.host', 253);
-  if (host !== host.toLowerCase() || /\s/.test(host)) {
-    invalidGrant('target.host', 'must be a normalized host');
-  }
   const version = requiredString(target.version, 'target.version', 32);
   if (!VERSION_PATTERN.test(version)) invalidGrant('target.version', 'has an unsupported format');
 
@@ -143,7 +150,11 @@ function validateUnsignedGrant(value: unknown): UnsignedMutationGrant {
     id,
     issuedAt: timestampString(grant.issuedAt, 'issuedAt'),
     expiresAt: timestampString(grant.expiresAt, 'expiresAt'),
-    target: Object.freeze({ host, version }),
+    target: Object.freeze({
+      endpointDigest: digestString(target.endpointDigest, 'target.endpointDigest'),
+      principalDigest: digestString(target.principalDigest, 'target.principalDigest'),
+      version,
+    }),
     operation: requiredString(grant.operation, 'operation', 256),
     requestDigest: digestString(grant.requestDigest, 'requestDigest'),
     schemaDigest: digestString(grant.schemaDigest, 'schemaDigest'),
@@ -167,7 +178,8 @@ function provenancePayload(grant: UnsignedMutationGrant): string {
     grant.id,
     grant.issuedAt,
     grant.expiresAt,
-    grant.target?.host,
+    grant.target?.endpointDigest,
+    grant.target?.principalDigest,
     grant.target?.version,
     grant.operation,
     grant.requestDigest,
@@ -203,6 +215,23 @@ export class MutationGrantAuthority {
     const received = Buffer.from(validated.provenance, 'hex');
     return received.length === expected.length && timingSafeEqual(received, expected);
   }
+
+  /**
+   * Produces non-reversible bindings without retaining host, username, or
+   * password in the grant. The principal digest uses the exact username passed
+   * to transport; only password rotation remains valid by design.
+   */
+  targetFor(credentials: CucmCredentials): MutationGrant['target'] {
+    const endpoint = normalizedHost(credentials.host);
+    const username = credentials.username;
+    const digest = (scope: string, value: string): string =>
+      createHmac('sha256', this.key).update(`${scope}\u0000${value}`).digest('hex');
+    return Object.freeze({
+      endpointDigest: digest('endpoint', endpoint),
+      principalDigest: digest('principal', `${endpoint}\u0000${username}`),
+      version: credentials.version,
+    });
+  }
 }
 
 const defaultMutationGrantAuthority = new MutationGrantAuthority();
@@ -215,16 +244,50 @@ export interface CreateMutationGrantOptions {
 }
 
 export class MutationGrantReplayStore {
-  private readonly consumedIds = new Set<string>();
+  private readonly consumedIds = new Map<string, number>();
 
-  consume(id: string): boolean {
+  constructor(private readonly maxEntries = 4_096) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+      throw new AxlPolicyError(
+        'AXL_MUTATION_GRANT_REPLAY_CAPACITY_INVALID',
+        'Mutation grant replay capacity must be a positive integer'
+      );
+    }
+  }
+
+  private prune(now: number): void {
+    for (const [id, expiresAt] of this.consumedIds) {
+      if (expiresAt <= now) this.consumedIds.delete(id);
+    }
+  }
+
+  consume(id: string, expiresAt: number, now = Date.now()): boolean {
+    this.prune(now);
     if (this.consumedIds.has(id)) return false;
-    this.consumedIds.add(id);
+    if (this.consumedIds.size >= this.maxEntries) {
+      throw new AxlPolicyError(
+        'AXL_MUTATION_GRANT_REPLAY_CAPACITY',
+        'Mutation grant replay capacity is exhausted; wait for prior grants to expire'
+      );
+    }
+    this.consumedIds.set(id, expiresAt);
     return true;
+  }
+
+  clear(): void {
+    this.consumedIds.clear();
+  }
+
+  get size(): number {
+    return this.consumedIds.size;
   }
 }
 
 export const defaultMutationGrantReplayStore = new MutationGrantReplayStore();
+
+export function clearMutationGrantReplayStore(): void {
+  defaultMutationGrantReplayStore.clear();
+}
 
 function normalizedHost(host: string): string {
   return host.trim().toLowerCase();
@@ -250,6 +313,123 @@ export function normalizeAxlOperation(value: unknown): string {
     );
   }
   return operation;
+}
+
+export function isReadOnlySqlQueryOperation(operation: string): boolean {
+  return READ_ONLY_SQL_QUERY_OPERATIONS.has(operation);
+}
+
+/**
+ * Replaces quoted content with inert placeholders while rejecting every
+ * supported Informix comment form. This deliberately recognizes only simple
+ * quoted strings and identifiers, leaving statement classification to a very
+ * small safe subset.
+ */
+function sqlCodeWithoutCommentsOrLiterals(sql: string): string | null {
+  let result = '';
+  let quote: "'" | '"' | undefined;
+
+  for (let index = 0; index < sql.length; index++) {
+    const character = sql[index] ?? '';
+    const next = sql[index + 1] ?? '';
+    if (quote) {
+      result += ' ';
+      if (character === quote) {
+        if (next === quote) {
+          result += ' ';
+          index++;
+        } else {
+          quote = undefined;
+        }
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      result += '?';
+      continue;
+    }
+    if (
+      (character === '-' && next === '-') ||
+      (character === '/' && next === '*') ||
+      (character === '*' && next === '/') ||
+      character === '{' ||
+      character === '}'
+    ) {
+      return null;
+    }
+    result += character;
+  }
+
+  return quote ? null : result;
+}
+
+const SQL_IDENTIFIER = '[A-Za-z_][A-Za-z0-9_$]*(?:\\.[A-Za-z_][A-Za-z0-9_$]*)?';
+const SQL_VALUE = `(?:${SQL_IDENTIFIER}|\\?|\\d+)`;
+const SQL_PROJECTION = `(?:\\*|${SQL_VALUE})(?:\\s+as\\s+${SQL_IDENTIFIER})?`;
+const SQL_COMPARISON = `${SQL_VALUE}\\s*(?:=|!=|<>|<=|>=|<|>)\\s*${SQL_VALUE}`;
+const SAFE_SIMPLE_SELECT = new RegExp(
+  `^\\s*select\\s+${SQL_PROJECTION}(?:\\s*,\\s*${SQL_PROJECTION})*` +
+    `(?:\\s+from\\s+${SQL_IDENTIFIER}(?:\\s+(?:as\\s+)?${SQL_IDENTIFIER})?` +
+    `(?:\\s+where\\s+${SQL_COMPARISON}(?:\\s+(?:and|or)\\s+${SQL_COMPARISON})*)?` +
+    `(?:\\s+order\\s+by\\s+${SQL_IDENTIFIER}(?:\\s+(?:asc|desc))?` +
+    `(?:\\s*,\\s*${SQL_IDENTIFIER}(?:\\s+(?:asc|desc))?)*)?` +
+    `(?:\\s+limit\\s+\\d+)?)?\\s*$`,
+  'i'
+);
+
+function isSafeSimpleSelect(statement: string): boolean {
+  if (/\b(?:nextval|currval|sequence|udr|spl)\b/i.test(statement)) return false;
+  if (/[()]/.test(statement)) return false;
+  return SAFE_SIMPLE_SELECT.test(statement);
+}
+
+/**
+ * Conservative guard for the read-only SQL tool. It intentionally accepts only
+ * one SELECT statement and rejects syntax that would require a SQL parser to
+ * classify safely. CUCM remains the final enforcement layer.
+ */
+export function assertReadOnlySqlQuery(data: unknown): void {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new AxlPolicyError(
+      'AXL_SQL_QUERY_NOT_READ_ONLY',
+      'SQL query payload must contain one read-only SELECT statement'
+    );
+  }
+  const sql = (data as Record<string, unknown>).sql;
+  if (typeof sql !== 'string') {
+    throw new AxlPolicyError(
+      'AXL_SQL_QUERY_NOT_READ_ONLY',
+      'SQL query payload must contain one read-only SELECT statement'
+    );
+  }
+  const statement = sqlCodeWithoutCommentsOrLiterals(sql);
+  if (!statement) {
+    throw new AxlPolicyError(
+      'AXL_SQL_QUERY_NOT_READ_ONLY',
+      'SQL query tool accepts only one read-only SELECT statement'
+    );
+  }
+  const trimmed = statement.trimEnd();
+  const terminalSemicolon = trimmed.lastIndexOf(';');
+  const withoutTerminator =
+    terminalSemicolon === trimmed.length - 1 ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  const containsWriteOrProcedureForm =
+    /\b(?:insert|update|delete|merge|replace|create|alter|drop|truncate|grant|revoke|call|exec(?:ute)?|procedure|begin|commit|rollback|into|for\s+update)\b/i.test(
+      withoutTerminator
+    );
+  if (
+    !withoutTerminator.trim() ||
+    containsWriteOrProcedureForm ||
+    (terminalSemicolon >= 0 && terminalSemicolon !== trimmed.length - 1) ||
+    withoutTerminator.includes(';') ||
+    !isSafeSimpleSelect(withoutTerminator)
+  ) {
+    throw new AxlPolicyError(
+      'AXL_SQL_QUERY_NOT_READ_ONLY',
+      'SQL query tool accepts only one read-only SELECT statement'
+    );
+  }
 }
 
 function invalidJson(path: string, reason: string): never {
@@ -445,7 +625,13 @@ export async function createMutationGrant(
       `Operation "${normalizedRequest.operation}" is not available for CUCM ${normalizedRequest.credentials.version}`
     );
   }
-  if (!isMutationOperation(normalizedRequest.operation, metadata)) {
+  if (isReadOnlySqlQueryOperation(normalizedRequest.operation)) {
+    assertReadOnlySqlQuery(normalizedRequest.data);
+  }
+  const mutation =
+    normalizedRequest.operation === 'executeSQLUpdate' ||
+    isMutationOperation(normalizedRequest.operation, metadata);
+  if (!mutation) {
     throw new AxlPolicyError(
       'AXL_MUTATION_GRANT_NOT_REQUIRED',
       `Operation "${normalizedRequest.operation}" is read-only and does not accept a mutation grant`
@@ -456,10 +642,9 @@ export async function createMutationGrant(
     id: options.id ?? randomUUID(),
     issuedAt: new Date(now).toISOString(),
     expiresAt: new Date(expiresAt).toISOString(),
-    target: {
-      host: normalizedHost(normalizedRequest.credentials.host),
-      version: normalizedRequest.credentials.version,
-    },
+    target: (context.authority ?? defaultMutationGrantAuthority).targetFor(
+      normalizedRequest.credentials
+    ),
     operation: normalizedRequest.operation,
     requestDigest: digestNormalizedMutationRequest(normalizedRequest),
     schemaDigest: artifacts.operationSchemaDigest,
@@ -504,9 +689,13 @@ export function consumeMutationGrant(options: {
   ) {
     throw new AxlPolicyError('AXL_MUTATION_GRANT_EXPIRED', 'Mutation grant has expired');
   }
+  const expectedTarget = (options.authority ?? defaultMutationGrantAuthority).targetFor(
+    request.credentials
+  );
   if (
-    grant.target.host !== normalizedHost(request.credentials.host) ||
-    grant.target.version !== request.credentials.version
+    grant.target.endpointDigest !== expectedTarget.endpointDigest ||
+    grant.target.principalDigest !== expectedTarget.principalDigest ||
+    grant.target.version !== expectedTarget.version
   ) {
     throw new AxlPolicyError(
       'AXL_MUTATION_GRANT_TARGET_DRIFT',
@@ -533,7 +722,7 @@ export function consumeMutationGrant(options: {
   }
 
   const replayStore = options.replayStore ?? defaultMutationGrantReplayStore;
-  if (!replayStore.consume(grant.id)) {
+  if (!replayStore.consume(grant.id, expiresAt, now)) {
     throw new AxlPolicyError(
       'AXL_MUTATION_GRANT_REPLAYED',
       'Mutation grant has already been consumed'

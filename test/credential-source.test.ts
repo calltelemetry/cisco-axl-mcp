@@ -86,8 +86,21 @@ class NeverCloseChild extends EventEmitter {
   }
 }
 
+class PidlessChild extends NeverCloseChild {
+  readonly pid = undefined;
+
+  override kill(): boolean {
+    this.killCalls += 1;
+    throw new Error('unsafe pidless kill');
+  }
+}
+
+class ValidPidChild extends NeverCloseChild {
+  readonly pid = 42;
+}
+
 function expectChildClean(child: ChildProcess): void {
-  expect(child.listenerCount('error')).toBe(0);
+  expect(child.listenerCount('error')).toBeLessThanOrEqual(1);
   expect(child.listenerCount('close')).toBe(0);
   expect(child.stdout?.listenerCount('data')).toBe(0);
   expect(child.stderr?.listenerCount('data')).toBe(0);
@@ -363,6 +376,58 @@ describe('CommandCredentialSource', () => {
     expect(child.killCalls).toBe(1);
     expectChildClean(child as unknown as ChildProcess);
     expect(() => child.emit('close', null, 'SIGKILL')).not.toThrow();
+  });
+
+  it.each([
+    ['pidless', new PidlessChild(), 0],
+    ['valid-pid', new ValidPidChild(), 1],
+  ])(
+    'only kills a spawn-valid child during shutdown (%s)',
+    async (_label, child, expectedKills) => {
+      let shutdownPromise: Promise<void> | undefined;
+      const source = createCredentialSource(
+        providerConfig('/probe', { timeoutMs: 250 }),
+        {},
+        {
+          spawn: () => {
+            shutdownPromise = source.shutdown();
+            return child as unknown as ChildProcess;
+          },
+          now: () => 1_000,
+          emitDiagnostic: () => undefined,
+        }
+      );
+
+      const refresh = source.refresh('startup');
+      await expect(refresh).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
+      await expect(shutdownPromise).resolves.toBeUndefined();
+
+      expect(child.killCalls).toBe(expectedKills);
+      expectChildClean(child as unknown as ChildProcess);
+    }
+  );
+
+  it('absorbs late child errors during bounded cleanup grace', async () => {
+    const probe = new NeverCloseChild();
+    const source = createCredentialSource(
+      providerConfig('/probe', { timeoutMs: 5_000 }),
+      {},
+      hooks(
+        () => 1_000,
+        [],
+        () => probe as unknown as ChildProcess
+      )
+    );
+    const refresh = source.refresh('startup');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await source.shutdown();
+    await expect(refresh).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
+
+    expect(probe.listenerCount('error')).toBe(1);
+    expect(() => probe.emit('error', new Error('late-provider-secret'))).not.toThrow();
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(probe.listenerCount('error')).toBe(0);
+    expectChildClean(probe as unknown as ChildProcess);
   });
 
   it('starts the provider with direct argv, isolated stdio, and no shell', async () => {

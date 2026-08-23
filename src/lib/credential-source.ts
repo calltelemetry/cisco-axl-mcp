@@ -10,6 +10,7 @@ const PROVIDER_FAILURE_MESSAGE = 'Credential provider failed';
 const CREDENTIALS_UNAVAILABLE_MESSAGE = 'Credentials unavailable';
 const MAX_PROVIDER_OUTPUT_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_LENGTH = 512;
+const CHILD_CLEANUP_GRACE_MS = 100;
 const PROCESS_HMAC_KEY = randomBytes(32);
 
 export type CredentialRefreshTrigger = 'startup' | 'ttl' | 'sighup' | 'auth-failure';
@@ -60,6 +61,13 @@ function credentialsUnavailable(): AxlPolicyError {
 
 function nowFrom(hooks: CredentialSourceHooks): number {
   return hooks.now?.() ?? hooks.clock?.() ?? Date.now();
+}
+
+function retainLateChildErrorSink(child: ChildProcess): void {
+  const sink = (): void => undefined;
+  child.on('error', sink);
+  const timer = setTimeout(() => child.removeListener('error', sink), CHILD_CLEANUP_GRACE_MS);
+  timer.unref?.();
 }
 
 function identityDigest(material: CredentialMaterial): string {
@@ -360,6 +368,23 @@ export class CommandCredentialSource implements CredentialSource {
   }
 
   private killChild(child: ChildProcess): void {
+    if (
+      'pid' in child &&
+      (typeof child.pid !== 'number' || !Number.isInteger(child.pid) || child.pid <= 0)
+    ) {
+      const onSpawn = (): void => {
+        clearTimeout(timer);
+        child.removeListener('spawn', onSpawn);
+        this.killChild(child);
+      };
+      child.once('spawn', onSpawn);
+      const timer = setTimeout(
+        () => child.removeListener('spawn', onSpawn),
+        CHILD_CLEANUP_GRACE_MS
+      );
+      timer.unref?.();
+      return;
+    }
     try {
       child.kill('SIGKILL');
     } catch {
@@ -428,6 +453,7 @@ export class CommandCredentialSource implements CredentialSource {
       const stdout = child.stdout;
       const stderr = child.stderr;
       if (!stdout || !stderr) {
+        retainLateChildErrorSink(child);
         this.killChild(child);
         stdout?.resume();
         stdout?.destroy();
@@ -452,6 +478,7 @@ export class CommandCredentialSource implements CredentialSource {
         stderr.removeListener('data', onStderrData);
         child.removeListener('error', onError);
         child.removeListener('close', onClose);
+        retainLateChildErrorSink(child);
         stdout.resume();
         stderr.resume();
         stdout.destroy();

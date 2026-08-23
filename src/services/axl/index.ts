@@ -1,11 +1,12 @@
 import type { CucmCredentials } from '../../types/credentials';
 import type {
   AxlClientCacheOptions,
+  AxlClientLease,
   AxlRequestLifecycle,
   ExecuteOperationOptions,
   TlsMode,
 } from '../../lib/axl-client';
-import { getAxlClient } from '../../lib/axl-client';
+import { acquireAxlClientLease } from '../../lib/axl-client';
 import { emitAxlDiagnostic } from '../../lib/runtime-diagnostics';
 import { isRetryable, isThrottleError } from '../../lib/retry';
 import { isMutationOperationForVersion } from '../../lib/operation-classification-core';
@@ -280,7 +281,8 @@ export class AxlAPIService {
     tlsMode: TlsMode,
     executionPolicy: AxlServiceExecutionPolicy | undefined,
     deadline: ExecutionDeadline,
-    shutdownSignal?: AbortSignal
+    shutdownSignal?: AbortSignal,
+    admittedLease?: AxlClientLease
   ): Promise<unknown> {
     const startTime = Date.now();
     const mutationOperation = isMutationOperationForVersion(operation, credentials.version);
@@ -292,15 +294,17 @@ export class AxlAPIService {
       onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
     };
 
-    const dispatch = (lifecycle: AxlRequestLifecycle) =>
-      getAxlClient(credentials, tlsMode, cacheOptions).executeOperation(
-        operation,
-        tags,
-        opts,
-        lifecycle
-      );
-
+    let lease = admittedLease;
+    let ownsLease = false;
     try {
+      if (!lease) {
+        lease = acquireAxlClientLease(credentials, tlsMode, cacheOptions);
+        ownsLease = true;
+      }
+      const activeLease = lease;
+      const dispatch = (lifecycle: AxlRequestLifecycle) =>
+        activeLease.client.executeOperation(operation, tags, opts, lifecycle);
+
       // Apply adaptive delay based on recent throttle history within the same deadline.
       const adaptiveDelay = getAdaptiveDelay(credentials.host);
       if (adaptiveDelay > 0) {
@@ -390,6 +394,8 @@ export class AxlAPIService {
         credentials.username,
         credentials.host,
       ]);
+    } finally {
+      if (ownsLease) lease?.release();
     }
   }
 
@@ -412,17 +418,36 @@ export class AxlAPIService {
     const allRows: unknown[] = [];
     let page = 0;
     let truncated = false;
+    const usesCustomExecuteOperation =
+      this.executeOperation !== AxlAPIService.prototype.executeOperation;
+    const lease = usesCustomExecuteOperation
+      ? undefined
+      : acquireAxlClientLease(credentials, tlsMode, {
+          ...(this.options.clientCacheMaxEntries === DEFAULT_CLIENT_CACHE_MAX_ENTRIES
+            ? {}
+            : { maxEntries: this.options.clientCacheMaxEntries }),
+          onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
+        });
 
-    while (true) {
-      const pageData = {
-        ...data,
-        skip: String(page * pageSize),
-        first: String(pageSize),
-      };
+    try {
+      while (true) {
+        const pageData = {
+          ...data,
+          skip: String(page * pageSize),
+          first: String(pageSize),
+        };
 
-      const result =
-        this.executeOperation === AxlAPIService.prototype.executeOperation
-          ? await this.executeOperationWithinDeadline(
+        const result = usesCustomExecuteOperation
+          ? await this.executeOperation(
+              credentials,
+              operation,
+              pageData,
+              opts,
+              tlsMode,
+              executionPolicy,
+              effectiveShutdownSignal
+            )
+          : await this.executeOperationWithinDeadline(
               credentials,
               operation,
               pageData,
@@ -430,38 +455,33 @@ export class AxlAPIService {
               tlsMode,
               executionPolicy,
               deadline,
-              effectiveShutdownSignal
-            )
-          : await this.executeOperation(
-              credentials,
-              operation,
-              pageData,
-              opts,
-              tlsMode,
-              executionPolicy,
-              effectiveShutdownSignal
+              effectiveShutdownSignal,
+              lease
             );
-      const pageRows = extractRows(result);
+        const pageRows = extractRows(result);
 
-      allRows.push(...pageRows);
-      page++;
+        allRows.push(...pageRows);
+        page++;
 
-      // Stop if we got fewer rows than requested (last page)
-      if (pageRows.length < pageSize) break;
+        // Stop if we got fewer rows than requested (last page)
+        if (pageRows.length < pageSize) break;
 
-      // Stop if we hit the safety cap
-      if (allRows.length >= maxRows) {
-        truncated = true;
-        break;
+        // Stop if we hit the safety cap
+        if (allRows.length >= maxRows) {
+          truncated = true;
+          break;
+        }
       }
-    }
 
-    return {
-      rows: allRows.slice(0, maxRows),
-      totalFetched: Math.min(allRows.length, maxRows),
-      pages: page,
-      truncated,
-    };
+      return {
+        rows: allRows.slice(0, maxRows),
+        totalFetched: Math.min(allRows.length, maxRows),
+        pages: page,
+        truncated,
+      };
+    } finally {
+      lease?.release();
+    }
   }
 }
 

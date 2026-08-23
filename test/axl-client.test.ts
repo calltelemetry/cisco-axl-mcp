@@ -519,6 +519,150 @@ describe('getAxlClient', () => {
     expect(first).not.toBe(changed);
   });
 
+  it('binds provider generations into opaque identities and retires old generations monotonically', async () => {
+    const {
+      acquireAxlClientLease,
+      createAxlClientCacheIdentity,
+      getAxlClientCacheDiagnostics,
+      retireAxlClientGeneration,
+    } = await import('../src/lib/axl-client');
+    const base: CucmCredentials = {
+      host: 'generation-cache.local',
+      username: 'admin',
+      password: 'rotating-secret',
+      version: '14.0',
+    };
+    const generationOne = { ...base, credentialGeneration: 1 };
+    const generationTwo = { ...base, credentialGeneration: 2 };
+
+    expect(createAxlClientCacheIdentity(generationOne, 'secure')).not.toBe(
+      createAxlClientCacheIdentity(generationTwo, 'secure')
+    );
+    const oldLease = acquireAxlClientLease(generationOne);
+    retireAxlClientGeneration(1);
+
+    expect(() => acquireAxlClientLease(generationOne)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' })
+    );
+    const currentLease = acquireAxlClientLease(generationTwo);
+    expect(clientObservations.constructorCalls).toHaveLength(2);
+
+    oldLease.release();
+    expect(getAxlClientCacheDiagnostics().cachedClients).toBe(1);
+    currentLease.release();
+    currentLease.release();
+    expect(getAxlClientCacheDiagnostics().cachedClients).toBe(1);
+  });
+
+  it('lets an already-leased generation drain while the next generation dispatches concurrently', async () => {
+    const { acquireAxlClientLease, getAxlClientCacheDiagnostics, retireAxlClientGeneration } =
+      await import('../src/lib/axl-client');
+    const base: CucmCredentials = {
+      host: 'generation-overlap.local',
+      username: 'admin',
+      password: 'rotating-secret',
+      version: '14.0',
+    };
+    const generationOne = { ...base, credentialGeneration: 1 };
+    const generationTwo = { ...base, credentialGeneration: 2 };
+    let finishOld!: () => void;
+    clientObservations.nextOperationGate = new Promise<void>(resolve => {
+      finishOld = resolve;
+    });
+
+    const oldLease = acquireAxlClientLease(generationOne);
+    const oldWork = oldLease.client.executeOperation('getPhone', {});
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(1));
+    retireAxlClientGeneration(1);
+    const currentLease = acquireAxlClientLease(generationTwo);
+    const currentWork = currentLease.client.executeOperation('getPhone', {});
+
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(2));
+    finishOld();
+    await expect(oldWork).resolves.toEqual({ ok: true });
+    await expect(currentWork).resolves.toEqual({ ok: true });
+    oldLease.release();
+    expect(getAxlClientCacheDiagnostics().cachedClients).toBe(1);
+    currentLease.release();
+  });
+
+  it('does not reuse a retired generation when rotating back to identical material', async () => {
+    const { acquireAxlClientLease, createAxlClientCacheIdentity, retireAxlClientGeneration } =
+      await import('../src/lib/axl-client');
+    const base: CucmCredentials = {
+      host: 'generation-rollback.local',
+      username: 'admin',
+      password: 'same-secret',
+      version: '14.0',
+    };
+    const generationOne = { ...base, credentialGeneration: 1 };
+    const generationTwo = { ...base, password: 'new-secret', credentialGeneration: 2 };
+    const generationThree = { ...base, credentialGeneration: 3 };
+    expect(createAxlClientCacheIdentity(generationOne, 'secure')).not.toBe(
+      createAxlClientCacheIdentity(generationThree, 'secure')
+    );
+
+    const first = acquireAxlClientLease(generationOne);
+    retireAxlClientGeneration(1);
+    const second = acquireAxlClientLease(generationTwo);
+    retireAxlClientGeneration(2);
+    const third = acquireAxlClientLease(generationThree);
+
+    expect(clientObservations.constructorCalls).toHaveLength(3);
+    expect(() => acquireAxlClientLease(generationOne)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' })
+    );
+    first.release();
+    second.release();
+    third.release();
+  });
+
+  it('aborts active work and clears both provider generations during full cache shutdown', async () => {
+    const { acquireAxlClientLease, clearAxlClientCache, getAxlClientCacheDiagnostics } =
+      await import('../src/lib/axl-client');
+    const base: CucmCredentials = {
+      host: 'generation-shutdown.local',
+      username: 'admin',
+      password: 'shutdown-secret',
+      version: '14.0',
+    };
+    clientObservations.dispatchTransport = true;
+    const firstLease = acquireAxlClientLease({ ...base, credentialGeneration: 1 });
+    const secondLease = acquireAxlClientLease({ ...base, credentialGeneration: 2 });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const lifecycle = (signal: AbortSignal) => ({
+      timeoutMs: 10_000,
+      signal,
+      markDispatched: () => undefined,
+    });
+    const first = firstLease.client.executeOperation(
+      'getPhone',
+      {},
+      undefined,
+      lifecycle(firstController.signal)
+    );
+    const second = secondLease.client.executeOperation(
+      'getPhone',
+      {},
+      undefined,
+      lifecycle(secondController.signal)
+    );
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(2));
+
+    clearAxlClientCache();
+    await expect(first).rejects.toThrow('AXL request canceled');
+    await expect(second).rejects.toThrow('AXL request canceled');
+    expect(getAxlClientCacheDiagnostics()).toEqual({
+      cachedClients: 0,
+      activeRequests: 0,
+      queuedRequests: 0,
+    });
+    firstLease.release();
+    secondLease.release();
+    clientObservations.dispatchTransport = false;
+  });
+
   it('keeps delimiter-ambiguous credential tuples in distinct cache identities and clients', async () => {
     const { createAxlClientCacheIdentity, getAxlClient } = await import('../src/lib/axl-client');
     const firstCredentials: CucmCredentials = {

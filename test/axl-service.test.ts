@@ -16,10 +16,21 @@ vi.mock('../src/lib/axl-client', async importOriginal => {
   const mockClient = {
     executeOperation: vi.fn().mockResolvedValue({ return: { phone: [{ name: 'SEP111' }] } }),
   };
+  const getAxlClient = vi.fn(
+    (_credentials?: unknown, _tlsMode?: unknown, _cacheOptions?: unknown) => mockClient
+  );
+  const acquireAxlClientLease = vi.fn(
+    (credentials: unknown, tlsMode: unknown, cacheOptions: unknown) => ({
+      client: getAxlClient(credentials, tlsMode, cacheOptions),
+      release: vi.fn(),
+    })
+  );
   return {
     ...actual,
-    getAxlClient: vi.fn(() => mockClient),
+    getAxlClient,
+    acquireAxlClientLease,
     __mockClient: mockClient,
+    __acquireAxlClientLease: acquireAxlClientLease,
   };
 });
 
@@ -29,6 +40,8 @@ import { AXL_RUNNER_PACKAGE_VERSION, runAxl } from '../src/lib/axl-runner';
 import { createMutationGrant, MutationGrantReplayStore } from '../src/lib/mutation-grants';
 import { loadAxlVersionArtifacts } from '../src/types/generated/axl-version-loader';
 const { __mockClient: mockClient, getAxlClient: mockGetAxlClient } =
+  (await import('../src/lib/axl-client')) as any;
+const { __acquireAxlClientLease: mockAcquireAxlClientLease } =
   (await import('../src/lib/axl-client')) as any;
 
 const creds = { host: 'test-host', username: 'admin', password: 'pass', version: '14.0' };
@@ -106,6 +119,37 @@ describe('AxlAPIService.executeOperation', () => {
       'insecure',
       expect.objectContaining({ onDiagnostic: expect.any(Function) })
     );
+  });
+
+  it('acquires one generation lease across every bounded retry and releases it once', async () => {
+    let calls = 0;
+    const release = vi.fn();
+    mockAcquireAxlClientLease.mockReturnValue({ client: mockClient, release });
+    mockClient.executeOperation.mockImplementation(() => {
+      calls++;
+      return calls === 2
+        ? Promise.resolve({ return: { phone: [{ name: 'SEP111' }] } })
+        : Promise.reject(new Error('503 Service Unavailable'));
+    });
+    const providerCredentials = { ...creds, credentialGeneration: 4 };
+    const service = new AxlAPIService({
+      tlsMode: 'secure',
+      requestTimeoutMs: 1_000,
+      clientCacheMaxEntries: 2,
+      maxRetries: 1,
+      retryBaseDelayMs: 1,
+    });
+
+    await expect(
+      service.executeOperation(providerCredentials, 'getPhone', { name: 'SEP111' })
+    ).resolves.toEqual({ return: { phone: [{ name: 'SEP111' }] } });
+    expect(mockAcquireAxlClientLease).toHaveBeenCalledOnce();
+    expect(mockAcquireAxlClientLease).toHaveBeenCalledWith(
+      providerCredentials,
+      'secure',
+      expect.objectContaining({ onDiagnostic: expect.any(Function) })
+    );
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('passes remaining deadline budget, cancellation signal, and dispatch callback to the client', async () => {
@@ -1374,6 +1418,8 @@ describe('AxlAPIService.listAll (integrated)', () => {
 
   it('paginates through real executeOperation', async () => {
     let callCount = 0;
+    const release = vi.fn();
+    mockAcquireAxlClientLease.mockReturnValue({ client: mockClient, release });
     mockClient.executeOperation.mockImplementation(async () => {
       callCount++;
       if (callCount === 1) {
@@ -1390,6 +1436,8 @@ describe('AxlAPIService.listAll (integrated)', () => {
     expect(result.rows).toHaveLength(1050);
     expect(result.pages).toBe(2);
     expect(result.truncated).toBe(false);
+    expect(mockAcquireAxlClientLease).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('handles empty response from CUCM', async () => {

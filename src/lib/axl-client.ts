@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import type { CucmCredentials } from '../types/credentials';
 import { AxlPolicyError } from '../types/axl/errors';
 import { assertTlsMode, type TlsMode } from './tls-mode';
+import { emitAxlDiagnostic } from './runtime-diagnostics';
 export { emitAxlDiagnostic } from './runtime-diagnostics';
 export { assertTlsMode, resolveMcpTlsMode, type McpTlsEnvironment, type TlsMode } from './tls-mode';
 
@@ -29,6 +30,11 @@ export interface AxlClient {
     lifecycle?: AxlRequestLifecycle
   ): Promise<unknown>;
   testAuthentication(): Promise<boolean>;
+}
+
+export interface AxlClientLease {
+  readonly client: AxlClient;
+  release(): void;
 }
 
 interface SoapSecurity {
@@ -65,6 +71,9 @@ export interface AxlClientCacheOptions {
 
 interface CachedAxlClient {
   client: AxlClient;
+  readonly credentialGeneration?: number;
+  leaseCount: number;
+  retiring: boolean;
   lastUsedAt: number;
   activeRequests: number;
   queuedRequests: number;
@@ -88,7 +97,9 @@ const DEFAULT_CLIENT_CACHE_MAX_ENTRIES = 16;
 const DEFAULT_CLIENT_CACHE_IDLE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_CLIENT_MAX_QUEUED_REQUESTS = 8;
 const clientCache = new Map<string, CachedAxlClient>();
+const clientEntries = new WeakMap<object, CachedAxlClient>();
 const cacheIdentityKey = randomBytes(32);
+let minimumProviderGeneration = 0;
 const tlsConfiguredClients = new WeakSet<object>();
 const abortConfiguredHttpClients = new WeakSet<object>();
 
@@ -104,6 +115,7 @@ export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: Tl
     creds.version,
     passwordIdentity,
     tlsMode,
+    creds.credentialGeneration ?? null,
   ]);
   return createHmac('sha256', cacheIdentityKey).update(identityTuple).digest('hex');
 }
@@ -285,6 +297,7 @@ function evictIdleClients(
 ): void {
   for (const [key, entry] of clientCache) {
     if (
+      entry.leaseCount === 0 &&
       entry.activeRequests === 0 &&
       entry.queuedRequests === 0 &&
       now - entry.lastUsedAt > idleTtlMs
@@ -293,6 +306,63 @@ function evictIdleClients(
       onDiagnostic('eviction');
     }
   }
+}
+
+function assertProviderGenerationAdmitted(generation: number | undefined): void {
+  if (generation === undefined) return;
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  if (generation < minimumProviderGeneration) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_RETIRED',
+      'Credential generation is retired'
+    );
+  }
+}
+
+function drainRetiringEntry(key: string, entry: CachedAxlClient): void {
+  if (
+    !entry.retiring ||
+    entry.leaseCount !== 0 ||
+    entry.activeRequests !== 0 ||
+    entry.queuedRequests !== 0 ||
+    clientCache.get(key) !== entry
+  ) {
+    return;
+  }
+  clientCache.delete(key);
+  emitAxlDiagnostic('credential_generation_drained');
+}
+
+function markRetiringEntries(): void {
+  for (const [key, entry] of clientCache) {
+    if (
+      entry.credentialGeneration !== undefined &&
+      entry.credentialGeneration < minimumProviderGeneration
+    ) {
+      if (!entry.retiring) {
+        entry.retiring = true;
+        emitAxlDiagnostic('credential_generation_draining');
+      }
+      drainRetiringEntry(key, entry);
+    }
+  }
+}
+
+/** Prevents new leases for this and every earlier provider generation. */
+export function retireAxlClientGeneration(generation: number): void {
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  minimumProviderGeneration = Math.max(minimumProviderGeneration, generation + 1);
+  markRetiringEntries();
 }
 
 /** Clears opaque cached clients during controlled shutdown or test isolation. */
@@ -347,12 +417,19 @@ export function getAxlClient(
   cacheOptions?: AxlClientCacheOptions
 ): AxlClient {
   assertTlsMode(tlsMode);
+  assertProviderGenerationAdmitted(creds.credentialGeneration);
   const cache = resolveCacheOptions(cacheOptions);
   const now = Date.now();
   evictIdleClients(now, cache.idleTtlMs, cache.onDiagnostic);
   const key = createAxlClientCacheIdentity(creds, tlsMode);
   const cached = clientCache.get(key);
   if (cached) {
+    if (cached.retiring) {
+      throw new AxlPolicyError(
+        'AXL_CREDENTIAL_GENERATION_RETIRED',
+        'Credential generation is retired'
+      );
+    }
     cached.lastUsedAt = now;
     clientCache.delete(key);
     clientCache.set(key, cached);
@@ -363,7 +440,8 @@ export function getAxlClient(
 
   while (clientCache.size >= cache.maxEntries) {
     const oldestKey = [...clientCache.entries()].find(
-      ([, entry]) => entry.activeRequests === 0 && entry.queuedRequests === 0
+      ([, entry]) =>
+        entry.leaseCount === 0 && entry.activeRequests === 0 && entry.queuedRequests === 0
     )?.[0];
     if (oldestKey === undefined) break;
     clientCache.delete(oldestKey);
@@ -388,6 +466,9 @@ export function getAxlClient(
   let pump: () => void = () => {};
   const entry: CachedAxlClient = {
     client: undefined as unknown as AxlClient,
+    credentialGeneration: creds.credentialGeneration,
+    leaseCount: 0,
+    retiring: false,
     lastUsedAt: now,
     activeRequests: 0,
     queuedRequests: 0,
@@ -405,6 +486,7 @@ export function getAxlClient(
     entry.queuedRequests = pendingRequests.length;
     pending.reject(cancelError());
     pump();
+    drainRetiringEntry(key, entry);
   };
 
   pump = () => {
@@ -423,6 +505,7 @@ export function getAxlClient(
       pending.settled = true;
       pending.reject(cancelError());
       pump();
+      drainRetiringEntry(key, entry);
       return;
     }
 
@@ -454,6 +537,7 @@ export function getAxlClient(
         effectiveLifecycle.dispose();
         entry.activeRequests--;
         pump();
+        drainRetiringEntry(key, entry);
       });
   };
 
@@ -500,5 +584,38 @@ export function getAxlClient(
   };
   entry.client = client;
   clientCache.set(key, entry);
+  clientEntries.set(client, entry);
   return client;
+}
+
+/** Acquires one cache lease for the complete lifetime of an admitted service request. */
+export function acquireAxlClientLease(
+  credentials: CucmCredentials,
+  tlsMode: TlsMode = 'secure',
+  cacheOptions?: AxlClientCacheOptions
+): AxlClientLease {
+  assertProviderGenerationAdmitted(credentials.credentialGeneration);
+  const client = getAxlClient(credentials, tlsMode, cacheOptions);
+  const entry = clientEntries.get(client);
+  if (!entry) {
+    throw new AxlPolicyError('AXL_CLIENT_CACHE_INVALID', 'AXL client cache entry is unavailable');
+  }
+  if (entry.retiring) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_RETIRED',
+      'Credential generation is retired'
+    );
+  }
+  entry.leaseCount++;
+  let released = false;
+  const key = createAxlClientCacheIdentity(credentials, tlsMode);
+  return {
+    client,
+    release: () => {
+      if (released) return;
+      released = true;
+      entry.leaseCount = Math.max(0, entry.leaseCount - 1);
+      drainRetiringEntry(key, entry);
+    },
+  };
 }

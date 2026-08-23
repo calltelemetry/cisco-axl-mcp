@@ -3,6 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:c
 import type { ResolvedMcpConfig } from './tool-config';
 import { AxlPolicyError } from './policy-error';
 import { emitCredentialDiagnostic, type CredentialDiagnosticEvent } from './runtime-diagnostics';
+import { retireAxlClientGeneration } from './axl-client';
 
 const PROVIDER_FAILURE_CODE = 'AXL_CREDENTIAL_PROVIDER_INVALID';
 const CREDENTIALS_UNAVAILABLE_CODE = 'AXL_CREDENTIALS_UNAVAILABLE';
@@ -550,7 +551,10 @@ export function createCredentialSource(
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   hooks: CredentialSourceHooks = {}
 ): CredentialSource {
+  const effectiveHooks = hooks.onRetireGeneration
+    ? hooks
+    : { ...hooks, onRetireGeneration: retireAxlClientGeneration };
   return config.credentialProvider
-    ? new CommandCredentialSource(config, hooks)
-    : new StaticEnvCredentialSource(environment, hooks);
+    ? new CommandCredentialSource(config, effectiveHooks)
+    : new StaticEnvCredentialSource(environment, effectiveHooks);
 }

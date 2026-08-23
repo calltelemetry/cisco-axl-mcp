@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../src/lib/tool-config';
 import { createCredentialSource, type CredentialSourceHooks } from '../src/lib/credential-source';
+import { acquireAxlClientLease, clearAxlClientCache } from '../src/lib/axl-client';
 
 let tempDir: string;
 
@@ -129,6 +130,40 @@ describe('StaticEnvCredentialSource', () => {
     expect(source.current(Date.now())).toBe(first);
     expect(await source.refresh('ttl')).toBe(first);
     await source.shutdown();
+  });
+});
+
+describe('credential-source client retirement integration', () => {
+  it('wires the default provider retirement hook to generation-aware leases', async () => {
+    const fixture = writeJsonFixture(
+      'default-retirement.js',
+      '{"username":"old-user","password":"old-password"}'
+    );
+    const source = createCredentialSource(providerConfig(fixture));
+    const first = await source.initialize();
+    const oldLease = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: first.material.username,
+      password: first.material.password,
+      version: '11.5',
+      credentialGeneration: first.generation,
+    });
+
+    writeJsonFixture('default-retirement.js', '{"username":"new-user","password":"new-password"}');
+    await source.refresh('sighup');
+
+    expect(() =>
+      acquireAxlClientLease({
+        host: 'fixed.example.test',
+        username: first.material.username,
+        password: first.material.password,
+        version: '11.5',
+        credentialGeneration: first.generation,
+      })
+    ).toThrowError(expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' }));
+    oldLease.release();
+    await source.shutdown();
+    clearAxlClientCache();
   });
 });
 

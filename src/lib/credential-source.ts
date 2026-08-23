@@ -317,7 +317,13 @@ export class CommandCredentialSource implements CredentialSource {
   refresh(trigger: CredentialRefreshTrigger): Promise<CredentialSnapshot> {
     if (this.shutDown) return Promise.reject(providerFailure());
     if (this.inFlight) return this.inFlight;
-    const refreshPromise = this.performRefresh(trigger);
+
+    let resolveRefresh!: (snapshot: CredentialSnapshot) => void;
+    let rejectRefresh!: (error: unknown) => void;
+    const refreshPromise = new Promise<CredentialSnapshot>((resolve, reject) => {
+      resolveRefresh = resolve;
+      rejectRefresh = reject;
+    });
     this.inFlight = refreshPromise;
     refreshPromise.then(
       () => {
@@ -327,6 +333,14 @@ export class CommandCredentialSource implements CredentialSource {
         if (this.inFlight === refreshPromise) this.inFlight = undefined;
       }
     );
+
+    queueMicrotask(() => {
+      if (this.shutDown) {
+        rejectRefresh(providerFailure());
+        return;
+      }
+      this.performRefresh(trigger).then(resolveRefresh, rejectRefresh);
+    });
     return refreshPromise;
   }
 
@@ -359,8 +373,8 @@ export class CommandCredentialSource implements CredentialSource {
   }
 
   private async performRefresh(_trigger: CredentialRefreshTrigger): Promise<CredentialSnapshot> {
-    this.emit('credential_refresh_started');
     try {
+      this.emit('credential_refresh_started');
       const material = await this.readProvider();
       if (this.shutDown) throw providerFailure();
       const resolvedAtMs = nowFrom(this.hooks);

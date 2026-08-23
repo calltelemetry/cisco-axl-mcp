@@ -274,6 +274,38 @@ describe('CommandCredentialSource', () => {
     await source.shutdown();
   });
 
+  it('installs the shared promise before synchronous spawn re-entry', async () => {
+    const children = [new NeverCloseChild(), new NeverCloseChild()];
+    let reentrant: Promise<unknown> | undefined;
+    let spawnCalls = 0;
+    const source = createCredentialSource(
+      providerConfig('/probe', { timeoutMs: 5_000 }),
+      {},
+      {
+        spawn: () => {
+          spawnCalls += 1;
+          if (spawnCalls === 1) reentrant = source.refresh('sighup');
+          return (children[spawnCalls - 1] ?? children[0]) as unknown as ChildProcess;
+        },
+        now: () => 1_000,
+        emitDiagnostic: () => undefined,
+      }
+    );
+
+    const first = source.refresh('startup');
+    await Promise.resolve();
+
+    expect(reentrant).toBe(first);
+    expect(spawnCalls).toBe(1);
+    await source.shutdown();
+    await expect(first).rejects.toMatchObject({
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
+    });
+    expect(children[0]?.killCalls).toBe(1);
+    expect(children[1]?.killCalls).toBe(0);
+    expectChildClean(children[0] as unknown as ChildProcess);
+  });
+
   it('starts the provider with direct argv, isolated stdio, and no shell', async () => {
     const fixture = writeJsonFixture(
       'argv.js',
@@ -487,6 +519,7 @@ describe('CommandCredentialSource', () => {
         )
       );
       const refresh = source.refresh('startup');
+      await Promise.resolve();
       if (scenario === 'stdout cap') probe.stdout.write(Buffer.alloc(65_537, 0x78));
       if (scenario === 'stderr cap') probe.stderr.write(Buffer.alloc(65_537, 0x78));
       if (scenario === 'error') probe.emit('error', new Error('provider-secret-error'));

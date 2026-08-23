@@ -25,6 +25,180 @@ describe('getEnabledTopLevelObjects', () => {
     expect(config.enabledObjects?.size).toBe(0);
     expect(config.allowGlobalActions).toBe(false);
     expect(config.allowInlineCredentials).toBe(false);
+    expect(config.credentialProvider).toBeNull();
+    expect(config.fixedTarget).toBeNull();
+  });
+
+  describe('credential provider configuration', () => {
+    const validEnvironment = {
+      CUCM_HOST: 'fixed.example.test',
+      CUCM_VERSION: '11.5',
+      AXL_MCP_CREDENTIAL_PROVIDER: '["/opt/ct/bin/axl-credentials","--asset-id","cucm-cluster"]',
+      AXL_MCP_CREDENTIAL_TTL_S: '30',
+      AXL_MCP_CREDENTIAL_MAX_STALE_S: '0',
+      AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS: '100',
+      AXL_MCP_CREDENTIAL_REFRESH_ON_SIGHUP: 'false',
+    };
+
+    it('resolves and freezes the provider and fixed target snapshot', () => {
+      const config = loadMcpConfig(validEnvironment, ['node', 'script.js']);
+
+      expect(config.credentialProvider).toEqual({
+        argv: ['/opt/ct/bin/axl-credentials', '--asset-id', 'cucm-cluster'],
+        ttlMs: 30_000,
+        maxStaleMs: 0,
+        timeoutMs: 100,
+        refreshOnSighup: false,
+      });
+      expect(Object.isFrozen(config.credentialProvider)).toBe(true);
+      expect(Object.isFrozen(config.credentialProvider!.argv)).toBe(true);
+      expect(config.fixedTarget).toEqual({ host: 'fixed.example.test', version: '11.5' });
+      expect(Object.isFrozen(config.fixedTarget)).toBe(true);
+    });
+
+    it('gives environment provider settings precedence over JSON settings', () => {
+      const environment = {
+        ...validEnvironment,
+        AXL_MCP_CONFIG: JSON.stringify({
+          credential_provider: ['/json/provider'],
+          credential_ttl_s: 60,
+          credential_max_stale_s: 120,
+          credential_provider_timeout_ms: 200,
+          credential_refresh_on_sighup: true,
+        }),
+      };
+
+      expect(loadMcpConfig(environment, ['node', 'script.js']).credentialProvider).toEqual({
+        argv: ['/opt/ct/bin/axl-credentials', '--asset-id', 'cucm-cluster'],
+        ttlMs: 30_000,
+        maxStaleMs: 0,
+        timeoutMs: 100,
+        refreshOnSighup: false,
+      });
+    });
+
+    it.each([
+      ['credential_provider', 'credentialProvider'],
+      ['credential_ttl_s', 'credentialTtlS'],
+      ['credential_max_stale_s', 'credentialMaxStaleS'],
+      ['credential_provider_timeout_ms', 'credentialProviderTimeoutMs'],
+      ['credential_refresh_on_sighup', 'credentialRefreshOnSighup'],
+    ])('rejects duplicate JSON aliases: %s and %s', (snake, camel) => {
+      const json = {
+        CUCM_HOST: 'fixed.example.test',
+        CUCM_VERSION: '11.5',
+        AXL_MCP_CONFIG: JSON.stringify({
+          [snake]:
+            snake === 'credential_provider'
+              ? ['/provider']
+              : snake === 'credential_refresh_on_sighup'
+                ? false
+                : 30,
+          [camel]:
+            camel === 'credential_provider'
+              ? ['/provider']
+              : camel === 'credentialRefreshOnSighup'
+                ? false
+                : 30,
+        }),
+      };
+
+      expect(() => loadMcpConfig(json, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it.each(['CUCM_USERNAME', 'CUCM_PASSWORD'])('rejects provider plus static %s', field => {
+      const environment = { ...validEnvironment, [field]: 'static-value' };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it('rejects provider plus inline credential mode', () => {
+      const environment = { ...validEnvironment, AXL_MCP_ALLOW_INLINE_CREDENTIALS: 'true' };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it.each(['CUCM_HOST', 'CUCM_VERSION'])('rejects provider without %s', field => {
+      const environment = { ...validEnvironment };
+      delete environment[field as keyof typeof environment];
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it('rejects an unsupported provider CUCM version', () => {
+      const environment = { ...validEnvironment, CUCM_VERSION: '13.0' };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it.each([
+      'null',
+      '"/opt/ct/bin/axl-credentials"',
+      '[]',
+      '["relative/provider"]',
+      '[123]',
+      '["/opt/ct/bin/axl-credentials", null]',
+      '[""]',
+    ])('rejects invalid provider argv: %s', provider => {
+      const environment = { ...validEnvironment, AXL_MCP_CREDENTIAL_PROVIDER: provider };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it.each([
+      ['AXL_MCP_CREDENTIAL_TTL_S', '29'],
+      ['AXL_MCP_CREDENTIAL_TTL_S', '86401'],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', '-1'],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', '259201'],
+      ['AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS', '99'],
+      ['AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS', '60001'],
+    ])('rejects out-of-range %s=%s', (field, value) => {
+      const environment = { ...validEnvironment, [field]: value };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
+
+    it.each([
+      ['AXL_MCP_CREDENTIAL_TTL_S', '30'],
+      ['AXL_MCP_CREDENTIAL_TTL_S', '86400'],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', '0'],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', '259200'],
+      ['AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS', '100'],
+      ['AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS', '60000'],
+    ])('accepts boundary %s=%s', (field, value) => {
+      const environment = { ...validEnvironment, [field]: value };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).not.toThrow();
+    });
+
+    it.each([
+      ['AXL_MCP_CREDENTIAL_TTL_S', '30.5'],
+      ['AXL_MCP_CREDENTIAL_TTL_S', '1e2'],
+      ['AXL_MCP_CREDENTIAL_TTL_S', ' 30'],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', true],
+      ['AXL_MCP_CREDENTIAL_MAX_STALE_S', null],
+      ['AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS', '100.0'],
+    ])('rejects non-integer provider setting %s=%s', (field, value) => {
+      const environment = { ...validEnvironment, [field]: value as string };
+
+      expect(() => loadMcpConfig(environment, ['node', 'script.js'])).toThrowError(
+        expect.objectContaining({ code: 'AXL_CONFIG_INVALID' })
+      );
+    });
   });
 
   it('does not expose a mutable enabled-object policy after startup resolution', () => {

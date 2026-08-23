@@ -152,6 +152,146 @@ describe('MCP Protocol Conformance', () => {
     construct.mockRestore();
   });
 
+  it('cleans up initialized provider and listeners when startup run fails', async () => {
+    const events: string[] = [];
+    const credentialSource = source(events, async () => {
+      events.push('source:initialize');
+      return {
+        material: { username: 'provider-user', password: 'provider-password' },
+        generation: 1,
+        resolvedAtMs: 1_000,
+        expiresAtMs: 100_000,
+        staleUntilMs: 100_000,
+        identityDigest: 'digest',
+      };
+    });
+    const beforeInt = new Set(process.listeners('SIGINT'));
+    const beforeTerm = new Set(process.listeners('SIGTERM'));
+    const beforeHup = new Set(process.listeners('SIGHUP'));
+    const run = vi
+      .spyOn(CiscoAxlMcpServer.prototype, 'run')
+      .mockRejectedValue(new Error('stdio connect failed'));
+
+    try {
+      await expect(startMcp(providerConfig(), runtime(credentialSource))).rejects.toThrow(
+        'stdio connect failed'
+      );
+      expect(events).toContain('source:shutdown');
+      expect(process.listeners('SIGINT')).toEqual([...beforeInt]);
+      expect(process.listeners('SIGTERM')).toEqual([...beforeTerm]);
+      expect(process.listeners('SIGHUP')).toEqual([...beforeHup]);
+    } finally {
+      run.mockRestore();
+      for (const listener of process.listeners('SIGINT')) {
+        if (!beforeInt.has(listener)) process.off('SIGINT', listener);
+      }
+      for (const listener of process.listeners('SIGTERM')) {
+        if (!beforeTerm.has(listener)) process.off('SIGTERM', listener);
+      }
+      for (const listener of process.listeners('SIGHUP')) {
+        if (!beforeHup.has(listener)) process.off('SIGHUP', listener);
+      }
+    }
+  });
+
+  it('cleans up initialized provider when server construction fails', async () => {
+    const events: string[] = [];
+    const credentialSource = source(events, async () => {
+      events.push('source:initialize');
+      return {
+        material: { username: 'provider-user', password: 'provider-password' },
+        generation: 1,
+        resolvedAtMs: 1_000,
+        expiresAtMs: 100_000,
+        staleUntilMs: 100_000,
+        identityDigest: 'digest',
+      };
+    });
+    const originalOn = process.on;
+    const on = vi.spyOn(process, 'on').mockImplementation(function (...args) {
+      if (args[0] === 'SIGINT') throw new Error('listener install failed');
+      return originalOn.apply(process, args as Parameters<typeof process.on>);
+    });
+
+    try {
+      await expect(startMcp(providerConfig(), runtime(credentialSource))).rejects.toThrow(
+        'listener install failed'
+      );
+      expect(events).toContain('source:shutdown');
+    } finally {
+      on.mockRestore();
+    }
+  });
+
+  it('shuts down credentials before waiting for the bounded AXL drain', async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const credentialSource = source(events, async () => ({
+      material: { username: 'provider-user', password: 'provider-password' },
+      generation: 1,
+      resolvedAtMs: 1_000,
+      expiresAtMs: 100_000,
+      staleUntilMs: 100_000,
+      identityDigest: 'digest',
+    }));
+    const server = new CiscoAxlMcpServer(
+      providerConfig({ enabledObjects: new Set(['Phone']) }),
+      runtime(credentialSource)
+    );
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      markStarted = resolve;
+    });
+    (server as unknown as { runner: AxlRunner }).runner = {
+      runAxl: async () => {
+        markStarted();
+        return new Promise(() => undefined);
+      },
+    };
+    const internal = server as unknown as {
+      server: { _requestHandlers: Map<string, (request: unknown) => Promise<unknown>> };
+    };
+    const call = internal.server._requestHandlers.get('tools/call');
+    if (!call) throw new Error('tools/call handler missing');
+
+    const request = call({
+      method: 'tools/call',
+      params: {
+        name: 'axl_execute',
+        arguments: {
+          cucm_version: '11.5',
+          operation: 'getPhone',
+          data: { name: 'SEP001122334455' },
+        },
+      },
+    });
+    const requestOutcome = request.catch(() => undefined);
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await started;
+      const shutdown = server.shutdown();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events).toContain('source:shutdown');
+      let settled = false;
+      void shutdown.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(shutdown).rejects.toThrow('Shutdown incomplete');
+    } finally {
+      void requestOutcome;
+      await server.shutdown().catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+
   it('refreshes once for enabled SIGHUP and unregisters before source shutdown', async () => {
     const events: string[] = [];
     const credentialSource = source(events, async () => ({

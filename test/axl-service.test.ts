@@ -51,6 +51,48 @@ afterEach(async () => {
 });
 
 describe('AxlAPIService.executeOperation', () => {
+  it('snapshots retry policy at service construction', async () => {
+    vi.useFakeTimers();
+    const originalRetries = process.env.AXL_MCP_MAX_RETRIES;
+    const originalDelay = process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+    process.env.AXL_MCP_MAX_RETRIES = '1';
+    process.env.AXL_MCP_RETRY_BASE_DELAY_MS = '1';
+    let calls = 0;
+    mockClient.executeOperation.mockImplementation(() => {
+      calls += 1;
+      return calls === 4
+        ? Promise.resolve({ return: { phone: [{ name: 'SEP111' }] } })
+        : Promise.reject(new Error('503 Service Unavailable'));
+    });
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 1_000,
+        clientCacheMaxEntries: 2,
+      });
+      process.env.AXL_MCP_MAX_RETRIES = '3';
+
+      const outcome = service.executeOperation(creds, 'getPhone', { name: 'SEP111' });
+      const observed = outcome.then(
+        value => ({ status: 'resolved' as const, value }),
+        error => ({ status: 'rejected' as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(observed).resolves.toMatchObject({
+        status: 'rejected',
+        error: { message: '503 Service Unavailable' },
+      });
+      expect(calls).toBe(2);
+    } finally {
+      if (originalRetries === undefined) delete process.env.AXL_MCP_MAX_RETRIES;
+      else process.env.AXL_MCP_MAX_RETRIES = originalRetries;
+      if (originalDelay === undefined) delete process.env.AXL_MCP_RETRY_BASE_DELAY_MS;
+      else process.env.AXL_MCP_RETRY_BASE_DELAY_MS = originalDelay;
+      vi.useRealTimers();
+    }
+  });
+
   it('passes the configured TLS mode through the service boundary', async () => {
     const ServiceWithTlsConstructor = AxlAPIService as unknown as new (
       tlsMode: 'secure' | 'insecure'
@@ -1258,6 +1300,30 @@ describe('AxlAPIService.executeOperation', () => {
 });
 
 describe('AxlAPIService.listAll (integrated)', () => {
+  it('snapshots the auto-pagination cap at service construction', async () => {
+    const originalMax = process.env.AXL_MCP_MAX_AUTOPAGINATE;
+    process.env.AXL_MCP_MAX_AUTOPAGINATE = '1000';
+    const rows = Array.from({ length: 1_000 }, (_, index) => ({ name: `SEP${index}` }));
+    mockClient.executeOperation.mockResolvedValue({ return: { phone: rows } });
+
+    try {
+      const service = new AxlAPIService({
+        tlsMode: 'secure',
+        requestTimeoutMs: 30_000,
+        clientCacheMaxEntries: 2,
+      });
+      process.env.AXL_MCP_MAX_AUTOPAGINATE = '3000';
+
+      const result = await service.listAll(creds, 'listPhone', { searchCriteria: { name: '%' } });
+
+      expect(result).toMatchObject({ pages: 1, totalFetched: 1_000, truncated: true });
+      expect(mockClient.executeOperation).toHaveBeenCalledOnce();
+    } finally {
+      if (originalMax === undefined) delete process.env.AXL_MCP_MAX_AUTOPAGINATE;
+      else process.env.AXL_MCP_MAX_AUTOPAGINATE = originalMax;
+    }
+  });
+
   it('uses one injected monotonic deadline across auto-pagination pages', async () => {
     vi.useFakeTimers();
     let monotonicNow = 0;

@@ -3,7 +3,7 @@ import { resolveCredentials } from '../src/lib/credential-resolver';
 import { resolveAdmittedCredentials, type AxlToolRuntime } from '../src/lib/credential-resolver';
 import type { CredentialSnapshot, CredentialSource } from '../src/lib/credential-source';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../src/lib/tool-config';
-import { getOptionalString, isRecord } from '../src/types/credentials';
+import { CREDENTIAL_SCOPE, getOptionalString, isRecord } from '../src/types/credentials';
 import { isSupportedCucmVersion, SUPPORTED_CUCM_VERSIONS } from '../src/lib/version-manager';
 
 describe('resolveCredentials', () => {
@@ -147,6 +147,28 @@ describe('resolveAdmittedCredentials', () => {
       version: '11.5',
       credentialGeneration: 7,
     });
+  });
+
+  it('carries the opaque provider scope into admitted credentials without serializing it', async () => {
+    const scope = Object.freeze({});
+    const current = { ...snapshot(10_000) };
+    Object.defineProperty(current, CREDENTIAL_SCOPE, {
+      value: scope,
+      enumerable: false,
+      writable: false,
+    });
+    const source: CredentialSource = {
+      initialize: async () => current,
+      current: () => current,
+      refresh: async () => current,
+      shutdown: async () => undefined,
+    };
+
+    const resolved = await resolveAdmittedCredentials({}, providerConfig, runtime(source));
+
+    expect(resolved[CREDENTIAL_SCOPE]).toBe(scope);
+    expect(Object.keys(resolved)).not.toContain('credentialScope');
+    expect(JSON.stringify(resolved)).not.toContain('credentialScope');
   });
 
   it('rejects provider version drift before consulting the credential source', async () => {

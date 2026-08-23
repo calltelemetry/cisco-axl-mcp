@@ -663,6 +663,66 @@ describe('getAxlClient', () => {
     clientObservations.dispatchTransport = false;
   });
 
+  it('finishes queued old-generation work after retirement before draining the entry', async () => {
+    const { acquireAxlClientLease, getAxlClientCacheDiagnostics, retireAxlClientGeneration } =
+      await import('../src/lib/axl-client');
+    const credentials: CucmCredentials = {
+      host: 'generation-queued-retirement.local',
+      username: 'admin',
+      password: 'queued-secret',
+      version: '14.0',
+      credentialGeneration: 1,
+    };
+    let finishActive!: () => void;
+    clientObservations.nextOperationGate = new Promise<void>(resolve => {
+      finishActive = resolve;
+    });
+    const lease = acquireAxlClientLease(credentials);
+    const active = lease.client.executeOperation('getPhone', { active: true });
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(1));
+    const queued = lease.client.executeOperation('getPhone', { queued: true });
+    retireAxlClientGeneration(1);
+    expect(() => acquireAxlClientLease(credentials)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' })
+    );
+    expect(getAxlClientCacheDiagnostics().queuedRequests).toBe(1);
+
+    finishActive();
+    await expect(active).resolves.toEqual({ ok: true });
+    await expect(queued).resolves.toEqual({ ok: true });
+    expect(getAxlClientCacheDiagnostics().cachedClients).toBe(1);
+    lease.release();
+    expect(getAxlClientCacheDiagnostics()).toEqual({
+      cachedClients: 0,
+      activeRequests: 0,
+      queuedRequests: 0,
+    });
+  });
+
+  it('drains the admitted entry when credentials mutate before idempotent release', async () => {
+    const { acquireAxlClientLease, getAxlClientCacheDiagnostics, retireAxlClientGeneration } =
+      await import('../src/lib/axl-client');
+    const credentials: CucmCredentials = {
+      host: 'generation-mutating-release.local',
+      username: 'admin',
+      password: 'original-secret',
+      version: '14.0',
+      credentialGeneration: 1,
+    };
+    const lease = acquireAxlClientLease(credentials);
+    retireAxlClientGeneration(1);
+    credentials.host = 'mutated-host';
+    credentials.password = 'mutated-password';
+
+    lease.release();
+    lease.release();
+    expect(getAxlClientCacheDiagnostics()).toEqual({
+      cachedClients: 0,
+      activeRequests: 0,
+      queuedRequests: 0,
+    });
+  });
+
   it('keeps delimiter-ambiguous credential tuples in distinct cache identities and clients', async () => {
     const { createAxlClientCacheIdentity, getAxlClient } = await import('../src/lib/axl-client');
     const firstCredentials: CucmCredentials = {

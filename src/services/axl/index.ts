@@ -231,6 +231,8 @@ export interface AxlServiceExecutionPolicy {
   readonly mutationRetryMode: 'strict';
   /** Request-local cancellation propagated from the MCP server shutdown path. */
   readonly shutdownSignal?: AbortSignal;
+  /** Internal outer lease passed through delegating auto-pagination overrides. */
+  readonly clientLease?: AxlClientLease;
 }
 
 export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.freeze({
@@ -269,7 +271,8 @@ export class AxlAPIService {
       tlsMode,
       executionPolicy,
       { expiresAt: this.clock.now() + this.options.requestTimeoutMs, dispatched: false },
-      effectiveShutdownSignal
+      effectiveShutdownSignal,
+      executionPolicy?.clientLease
     );
   }
 
@@ -420,14 +423,12 @@ export class AxlAPIService {
     let truncated = false;
     const usesCustomExecuteOperation =
       this.executeOperation !== AxlAPIService.prototype.executeOperation;
-    const lease = usesCustomExecuteOperation
-      ? undefined
-      : acquireAxlClientLease(credentials, tlsMode, {
-          ...(this.options.clientCacheMaxEntries === DEFAULT_CLIENT_CACHE_MAX_ENTRIES
-            ? {}
-            : { maxEntries: this.options.clientCacheMaxEntries }),
-          onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
-        });
+    const lease = acquireAxlClientLease(credentials, tlsMode, {
+      ...(this.options.clientCacheMaxEntries === DEFAULT_CLIENT_CACHE_MAX_ENTRIES
+        ? {}
+        : { maxEntries: this.options.clientCacheMaxEntries }),
+      onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
+    });
 
     try {
       while (true) {
@@ -437,6 +438,12 @@ export class AxlAPIService {
           first: String(pageSize),
         };
 
+        const delegatedExecutionPolicy = usesCustomExecuteOperation
+          ? {
+              ...(executionPolicy ?? { mutationRetryMode: 'strict' as const }),
+              clientLease: lease,
+            }
+          : executionPolicy;
         const result = usesCustomExecuteOperation
           ? await this.executeOperation(
               credentials,
@@ -444,7 +451,7 @@ export class AxlAPIService {
               pageData,
               opts,
               tlsMode,
-              executionPolicy,
+              delegatedExecutionPolicy,
               effectiveShutdownSignal
             )
           : await this.executeOperationWithinDeadline(

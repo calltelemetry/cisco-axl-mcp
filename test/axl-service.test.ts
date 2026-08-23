@@ -1440,6 +1440,35 @@ describe('AxlAPIService.listAll (integrated)', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('keeps one outer lease when an overridden executeOperation delegates to the base method', async () => {
+    let callCount = 0;
+    const release = vi.fn();
+    mockAcquireAxlClientLease.mockReturnValue({ client: mockClient, release });
+    mockClient.executeOperation.mockImplementation(async () => {
+      callCount++;
+      return {
+        return: {
+          phone: Array.from({ length: callCount === 1 ? 1000 : 1 }, (_, index) => ({
+            name: `P${index}`,
+          })),
+        },
+      };
+    });
+    class DelegatingService extends AxlAPIService {
+      override async executeOperation(...args: Parameters<AxlAPIService['executeOperation']>) {
+        return super.executeOperation(...args);
+      }
+    }
+
+    const service = new DelegatingService();
+    const result = await service.listAll(creds, 'listPhone', {});
+
+    expect(result.pages).toBe(2);
+    expect(result.rows).toHaveLength(1001);
+    expect(mockAcquireAxlClientLease).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('handles empty response from CUCM', async () => {
     mockClient.executeOperation.mockResolvedValue({});
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../src/lib/tool-config';
 import { createCredentialSource, type CredentialSourceHooks } from '../src/lib/credential-source';
 import { acquireAxlClientLease, clearAxlClientCache } from '../src/lib/axl-client';
+import { CREDENTIAL_SCOPE } from '../src/types/credentials';
 
 let tempDir: string;
 
@@ -147,6 +148,7 @@ describe('credential-source client retirement integration', () => {
       password: first.material.password,
       version: '11.5',
       credentialGeneration: first.generation,
+      [CREDENTIAL_SCOPE]: first[CREDENTIAL_SCOPE],
     });
 
     writeJsonFixture('default-retirement.js', '{"username":"new-user","password":"new-password"}');
@@ -159,10 +161,124 @@ describe('credential-source client retirement integration', () => {
         password: first.material.password,
         version: '11.5',
         credentialGeneration: first.generation,
+        [CREDENTIAL_SCOPE]: first[CREDENTIAL_SCOPE],
       })
     ).toThrowError(expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' }));
     oldLease.release();
     await source.shutdown();
+    clearAxlClientCache();
+  });
+
+  it('runs mandatory retirement before a caller hook, exactly once each', async () => {
+    const fixture = writeJsonFixture(
+      'composed-retirement.js',
+      '{"username":"old-user","password":"old-password"}'
+    );
+    const callerHook = vi.fn(() => {
+      throw new Error('observer hook failed');
+    });
+    const source = createCredentialSource(
+      providerConfig(fixture),
+      {},
+      { onRetireGeneration: callerHook }
+    );
+    const first = await source.initialize();
+    const oldLease = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: first.material.username,
+      password: first.material.password,
+      version: '11.5',
+      credentialGeneration: first.generation,
+      [CREDENTIAL_SCOPE]: first[CREDENTIAL_SCOPE],
+    });
+
+    writeJsonFixture('composed-retirement.js', '{"username":"new-user","password":"new-password"}');
+    await expect(source.refresh('sighup')).rejects.toMatchObject({
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
+    });
+    expect(callerHook).toHaveBeenCalledOnce();
+    expect(() =>
+      acquireAxlClientLease({
+        host: 'fixed.example.test',
+        username: first.material.username,
+        password: first.material.password,
+        version: '11.5',
+        credentialGeneration: first.generation,
+        [CREDENTIAL_SCOPE]: first[CREDENTIAL_SCOPE],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' }));
+    oldLease.release();
+    await source.shutdown();
+    clearAxlClientCache();
+  });
+
+  it('keeps source generations isolated when materials and generation numbers match', async () => {
+    const fixtureA = writeJsonFixture(
+      'source-a.js',
+      '{"username":"shared-user","password":"shared-password"}'
+    );
+    const fixtureB = writeJsonFixture(
+      'source-b.js',
+      '{"username":"shared-user","password":"shared-password"}'
+    );
+    const sourceA = createCredentialSource(providerConfig(fixtureA));
+    const sourceB = createCredentialSource(providerConfig(fixtureB));
+    const firstA = await sourceA.initialize();
+    const firstB = await sourceB.initialize();
+    const leaseA = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: firstA.material.username,
+      password: firstA.material.password,
+      version: '11.5',
+      credentialGeneration: firstA.generation,
+      [CREDENTIAL_SCOPE]: firstA[CREDENTIAL_SCOPE],
+    });
+    const leaseB = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: firstB.material.username,
+      password: firstB.material.password,
+      version: '11.5',
+      credentialGeneration: firstB.generation,
+      [CREDENTIAL_SCOPE]: firstB[CREDENTIAL_SCOPE],
+    });
+    expect(leaseA.client).not.toBe(leaseB.client);
+
+    writeJsonFixture('source-a.js', '{"username":"rotated-user","password":"rotated-password"}');
+    const secondA = await sourceA.refresh('sighup');
+    expect(secondA.generation).toBe(2);
+    expect(() =>
+      acquireAxlClientLease({
+        host: 'fixed.example.test',
+        username: firstA.material.username,
+        password: firstA.material.password,
+        version: '11.5',
+        credentialGeneration: firstA.generation,
+        [CREDENTIAL_SCOPE]: firstA[CREDENTIAL_SCOPE],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' }));
+    const stillAdmissibleB = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: firstB.material.username,
+      password: firstB.material.password,
+      version: '11.5',
+      credentialGeneration: firstB.generation,
+      [CREDENTIAL_SCOPE]: firstB[CREDENTIAL_SCOPE],
+    });
+    const currentA = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: secondA.material.username,
+      password: secondA.material.password,
+      version: '11.5',
+      credentialGeneration: secondA.generation,
+      [CREDENTIAL_SCOPE]: secondA[CREDENTIAL_SCOPE],
+    });
+    expect(currentA.client).not.toBe(leaseA.client);
+    leaseA.release();
+    leaseB.release();
+    stillAdmissibleB.release();
+    currentA.release();
+    await sourceA.shutdown();
+    await sourceB.shutdown();
     clearAxlClientCache();
   });
 });

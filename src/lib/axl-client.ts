@@ -1,7 +1,7 @@
 import CiscoAxlService from 'cisco-axl';
 import { createHmac, randomBytes } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
-import type { CucmCredentials } from '../types/credentials';
+import { CREDENTIAL_SCOPE, type CredentialScope, type CucmCredentials } from '../types/credentials';
 import { AxlPolicyError } from '../types/axl/errors';
 import { assertTlsMode, type TlsMode } from './tls-mode';
 import { emitAxlDiagnostic } from './runtime-diagnostics';
@@ -72,6 +72,7 @@ export interface AxlClientCacheOptions {
 interface CachedAxlClient {
   client: AxlClient;
   readonly credentialGeneration?: number;
+  readonly credentialScope?: CredentialScope;
   leaseCount: number;
   retiring: boolean;
   lastUsedAt: number;
@@ -99,7 +100,9 @@ const DEFAULT_CLIENT_MAX_QUEUED_REQUESTS = 8;
 const clientCache = new Map<string, CachedAxlClient>();
 const clientEntries = new WeakMap<object, CachedAxlClient>();
 const cacheIdentityKey = randomBytes(32);
-let minimumProviderGeneration = 0;
+const defaultProviderScope: CredentialScope = Object.freeze({});
+const scopeIdentityKeys = new WeakMap<CredentialScope, Buffer>();
+const minimumProviderGenerationByScope = new WeakMap<CredentialScope, number>();
 const tlsConfiguredClients = new WeakSet<object>();
 const abortConfiguredHttpClients = new WeakSet<object>();
 
@@ -116,8 +119,27 @@ export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: Tl
     passwordIdentity,
     tlsMode,
     creds.credentialGeneration ?? null,
+    creds.credentialGeneration === undefined
+      ? null
+      : createHmac('sha256', cacheIdentityKey)
+          .update(scopeIdentityKey(creds[CREDENTIAL_SCOPE] ?? defaultProviderScope))
+          .digest('hex'),
   ]);
   return createHmac('sha256', cacheIdentityKey).update(identityTuple).digest('hex');
+}
+
+function scopeIdentityKey(scope: CredentialScope): Buffer {
+  let identity = scopeIdentityKeys.get(scope);
+  if (!identity) {
+    identity = randomBytes(32);
+    scopeIdentityKeys.set(scope, identity);
+  }
+  return identity;
+}
+
+function providerScope(credentials: CucmCredentials): CredentialScope {
+  const scope = credentials[CREDENTIAL_SCOPE];
+  return scope && typeof scope === 'object' ? scope : defaultProviderScope;
 }
 
 function applyExplicitTls(
@@ -308,7 +330,10 @@ function evictIdleClients(
   }
 }
 
-function assertProviderGenerationAdmitted(generation: number | undefined): void {
+function assertProviderGenerationAdmitted(
+  generation: number | undefined,
+  scope: CredentialScope = defaultProviderScope
+): void {
   if (generation === undefined) return;
   if (!Number.isSafeInteger(generation) || generation < 1) {
     throw new AxlPolicyError(
@@ -316,7 +341,7 @@ function assertProviderGenerationAdmitted(generation: number | undefined): void 
       'Credential generation is invalid'
     );
   }
-  if (generation < minimumProviderGeneration) {
+  if (generation < (minimumProviderGenerationByScope.get(scope) ?? 0)) {
     throw new AxlPolicyError(
       'AXL_CREDENTIAL_GENERATION_RETIRED',
       'Credential generation is retired'
@@ -338,11 +363,13 @@ function drainRetiringEntry(key: string, entry: CachedAxlClient): void {
   emitAxlDiagnostic('credential_generation_drained');
 }
 
-function markRetiringEntries(): void {
+function markRetiringEntries(scope: CredentialScope): void {
+  const minimumGeneration = minimumProviderGenerationByScope.get(scope) ?? 0;
   for (const [key, entry] of clientCache) {
     if (
+      entry.credentialScope === scope &&
       entry.credentialGeneration !== undefined &&
-      entry.credentialGeneration < minimumProviderGeneration
+      entry.credentialGeneration < minimumGeneration
     ) {
       if (!entry.retiring) {
         entry.retiring = true;
@@ -354,15 +381,21 @@ function markRetiringEntries(): void {
 }
 
 /** Prevents new leases for this and every earlier provider generation. */
-export function retireAxlClientGeneration(generation: number): void {
+export function retireAxlClientGeneration(
+  generation: number,
+  scope: CredentialScope = defaultProviderScope
+): void {
   if (!Number.isSafeInteger(generation) || generation < 1) {
     throw new AxlPolicyError(
       'AXL_CREDENTIAL_GENERATION_INVALID',
       'Credential generation is invalid'
     );
   }
-  minimumProviderGeneration = Math.max(minimumProviderGeneration, generation + 1);
-  markRetiringEntries();
+  minimumProviderGenerationByScope.set(
+    scope,
+    Math.max(minimumProviderGenerationByScope.get(scope) ?? 0, generation + 1)
+  );
+  markRetiringEntries(scope);
 }
 
 /** Clears opaque cached clients during controlled shutdown or test isolation. */
@@ -417,7 +450,7 @@ export function getAxlClient(
   cacheOptions?: AxlClientCacheOptions
 ): AxlClient {
   assertTlsMode(tlsMode);
-  assertProviderGenerationAdmitted(creds.credentialGeneration);
+  assertProviderGenerationAdmitted(creds.credentialGeneration, providerScope(creds));
   const cache = resolveCacheOptions(cacheOptions);
   const now = Date.now();
   evictIdleClients(now, cache.idleTtlMs, cache.onDiagnostic);
@@ -467,6 +500,7 @@ export function getAxlClient(
   const entry: CachedAxlClient = {
     client: undefined as unknown as AxlClient,
     credentialGeneration: creds.credentialGeneration,
+    credentialScope: creds.credentialGeneration === undefined ? undefined : providerScope(creds),
     leaseCount: 0,
     retiring: false,
     lastUsedAt: now,
@@ -594,7 +628,9 @@ export function acquireAxlClientLease(
   tlsMode: TlsMode = 'secure',
   cacheOptions?: AxlClientCacheOptions
 ): AxlClientLease {
-  assertProviderGenerationAdmitted(credentials.credentialGeneration);
+  const scope = providerScope(credentials);
+  assertProviderGenerationAdmitted(credentials.credentialGeneration, scope);
+  const admissionKey = createAxlClientCacheIdentity(credentials, tlsMode);
   const client = getAxlClient(credentials, tlsMode, cacheOptions);
   const entry = clientEntries.get(client);
   if (!entry) {
@@ -608,14 +644,13 @@ export function acquireAxlClientLease(
   }
   entry.leaseCount++;
   let released = false;
-  const key = createAxlClientCacheIdentity(credentials, tlsMode);
   return {
     client,
     release: () => {
       if (released) return;
       released = true;
       entry.leaseCount = Math.max(0, entry.leaseCount - 1);
-      drainRetiringEntry(key, entry);
+      drainRetiringEntry(admissionKey, entry);
     },
   };
 }

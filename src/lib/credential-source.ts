@@ -4,6 +4,7 @@ import type { ResolvedMcpConfig } from './tool-config';
 import { AxlPolicyError } from './policy-error';
 import { emitCredentialDiagnostic, type CredentialDiagnosticEvent } from './runtime-diagnostics';
 import { retireAxlClientGeneration } from './axl-client';
+import { CREDENTIAL_SCOPE, type CredentialScope } from '../types/credentials';
 
 const PROVIDER_FAILURE_CODE = 'AXL_CREDENTIAL_PROVIDER_INVALID';
 const CREDENTIALS_UNAVAILABLE_CODE = 'AXL_CREDENTIALS_UNAVAILABLE';
@@ -28,6 +29,7 @@ export interface CredentialSnapshot {
   readonly expiresAtMs: number;
   readonly staleUntilMs: number;
   readonly identityDigest: string;
+  readonly [CREDENTIAL_SCOPE]?: CredentialScope;
 }
 
 export interface CredentialSource {
@@ -49,7 +51,7 @@ export interface CredentialSourceHooks {
   readonly spawn?: CredentialSpawn;
   readonly emitDiagnostic?: (event: CredentialDiagnosticEvent) => void;
   readonly onDiagnostic?: (event: CredentialDiagnosticEvent) => void;
-  readonly onRetireGeneration?: (oldGeneration: number) => void;
+  readonly onRetireGeneration?: (oldGeneration: number, scope?: CredentialScope) => void;
 }
 
 function providerFailure(): AxlPolicyError {
@@ -92,16 +94,26 @@ function immutableSnapshot(
   generation: number,
   resolvedAtMs: number,
   expiresAtMs: number,
-  staleUntilMs: number
+  staleUntilMs: number,
+  scope?: CredentialScope
 ): CredentialSnapshot {
-  return Object.freeze({
+  const snapshot = {
     material,
     generation,
     resolvedAtMs,
     expiresAtMs,
     staleUntilMs,
     identityDigest: identityDigest(material),
-  });
+  } as CredentialSnapshot;
+  if (scope) {
+    Object.defineProperty(snapshot, CREDENTIAL_SCOPE, {
+      value: scope,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+  return Object.freeze(snapshot);
 }
 
 function staticSnapshot(
@@ -289,6 +301,7 @@ export class StaticEnvCredentialSource implements CredentialSource {
 
 export class CommandCredentialSource implements CredentialSource {
   private readonly providerConfig;
+  private readonly scope: CredentialScope = Object.freeze({});
   private readonly hooks: CredentialSourceHooks;
   private readonly spawnProcess: CredentialSpawn;
   private snapshot: CredentialSnapshot | undefined;
@@ -411,18 +424,18 @@ export class CommandCredentialSource implements CredentialSource {
       const generation =
         previous === undefined ? 1 : changed ? previous.generation + 1 : previous.generation;
       const nextMaterial = changed ? material : previous.material;
-      const snapshot = Object.freeze({
-        material: nextMaterial,
+      const snapshot = immutableSnapshot(
+        nextMaterial,
         generation,
         resolvedAtMs,
-        expiresAtMs: resolvedAtMs + this.providerConfig.ttlMs,
-        staleUntilMs: resolvedAtMs + this.providerConfig.ttlMs + this.providerConfig.maxStaleMs,
-        identityDigest: digest,
-      });
+        resolvedAtMs + this.providerConfig.ttlMs,
+        resolvedAtMs + this.providerConfig.ttlMs + this.providerConfig.maxStaleMs,
+        this.scope
+      );
       this.snapshot = snapshot;
       if (changed && previous) {
         this.emit('credential_refresh_rotated');
-        this.hooks.onRetireGeneration?.(previous.generation);
+        this.hooks.onRetireGeneration?.(previous.generation, this.scope);
       } else if (!changed) {
         this.emit('credential_refresh_unchanged');
       }
@@ -551,9 +564,15 @@ export function createCredentialSource(
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   hooks: CredentialSourceHooks = {}
 ): CredentialSource {
-  const effectiveHooks = hooks.onRetireGeneration
-    ? hooks
-    : { ...hooks, onRetireGeneration: retireAxlClientGeneration };
+  const callerHook = hooks.onRetireGeneration;
+  const effectiveHooks = {
+    ...hooks,
+    onRetireGeneration: (oldGeneration: number, scope?: CredentialScope) => {
+      // Retire first so a throwing observer cannot leave old credentials admissible.
+      retireAxlClientGeneration(oldGeneration, scope);
+      callerHook?.(oldGeneration, scope);
+    },
+  };
   return config.credentialProvider
     ? new CommandCredentialSource(config, effectiveHooks)
     : new StaticEnvCredentialSource(environment, effectiveHooks);

@@ -4,6 +4,7 @@ import type { CucmCredentials, ToolCredentialOverrides } from '../types/credenti
 import { AxlPolicyError } from '../types/axl/errors';
 import type { CredentialSource } from './credential-source';
 import type { ResolvedMcpConfig } from './tool-config';
+import { CREDENTIAL_SCOPE } from '../types/credentials';
 
 export interface AxlToolRuntime {
   readonly credentialSource: CredentialSource;
@@ -118,13 +119,23 @@ export async function resolveAdmittedCredentials(
     }
     assertProviderVersion(overrides.cucm_version, config.fixedTarget.version);
     const snapshot = await currentAdmittedSnapshot(runtime);
-    return Object.freeze({
+    const admitted = {
       host: config.fixedTarget.host,
       username: snapshot.material.username,
       password: snapshot.material.password,
       version: config.fixedTarget.version,
       credentialGeneration: snapshot.generation,
-    });
+    } as CucmCredentials;
+    const scope = snapshot[CREDENTIAL_SCOPE];
+    if (scope) {
+      Object.defineProperty(admitted, CREDENTIAL_SCOPE, {
+        value: scope,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return Object.freeze(admitted);
   }
 
   return Object.freeze(

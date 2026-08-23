@@ -375,6 +375,7 @@ export class CommandCredentialSource implements CredentialSource {
   private async performRefresh(_trigger: CredentialRefreshTrigger): Promise<CredentialSnapshot> {
     try {
       this.emit('credential_refresh_started');
+      if (this.shutDown) throw providerFailure();
       const material = await this.readProvider();
       if (this.shutDown) throw providerFailure();
       const resolvedAtMs = nowFrom(this.hooks);
@@ -428,6 +429,10 @@ export class CommandCredentialSource implements CredentialSource {
       const stderr = child.stderr;
       if (!stdout || !stderr) {
         this.killChild(child);
+        stdout?.resume();
+        stdout?.destroy();
+        stderr?.resume();
+        stderr?.destroy();
         this.activeChild = undefined;
         reject(providerFailure());
         return;
@@ -508,6 +513,7 @@ export class CommandCredentialSource implements CredentialSource {
       child.once('close', onClose);
       this.activeAbort = failAndTerminate;
       timeout = setTimeout(failAndTerminate, this.providerConfig.timeoutMs);
+      if (this.shutDown) failAndTerminate();
     });
   }
 }

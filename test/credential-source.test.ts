@@ -306,6 +306,65 @@ describe('CommandCredentialSource', () => {
     expectChildClean(children[0] as unknown as ChildProcess);
   });
 
+  it('does not spawn after startup diagnostics synchronously shut down the source', async () => {
+    const child = new NeverCloseChild();
+    let spawnCalls = 0;
+    let shutdownPromise: Promise<void> | undefined;
+    const source = createCredentialSource(
+      providerConfig('/probe', { timeoutMs: 250 }),
+      {},
+      {
+        spawn: () => {
+          spawnCalls += 1;
+          return child as unknown as ChildProcess;
+        },
+        now: () => 1_000,
+        emitDiagnostic: event => {
+          if (event === 'credential_refresh_started') shutdownPromise = source.shutdown();
+        },
+      }
+    );
+
+    const started = Date.now();
+    const refresh = source.refresh('startup');
+    await expect(refresh).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
+    await expect(shutdownPromise).resolves.toBeUndefined();
+
+    expect(Date.now() - started).toBeLessThan(100);
+    expect(spawnCalls).toBe(0);
+    expect(child.killCalls).toBe(0);
+  });
+
+  it('kills and settles a child when shutdown runs synchronously during spawn', async () => {
+    const child = new NeverCloseChild();
+    let spawnCalls = 0;
+    let shutdownPromise: Promise<void> | undefined;
+    const source = createCredentialSource(
+      providerConfig('/probe', { timeoutMs: 250 }),
+      {},
+      {
+        spawn: () => {
+          spawnCalls += 1;
+          shutdownPromise = source.shutdown();
+          return child as unknown as ChildProcess;
+        },
+        now: () => 1_000,
+        emitDiagnostic: () => undefined,
+      }
+    );
+
+    const started = Date.now();
+    const refresh = source.refresh('startup');
+    await expect(refresh).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
+    await expect(shutdownPromise).resolves.toBeUndefined();
+
+    expect(Date.now() - started).toBeLessThan(100);
+    expect(spawnCalls).toBe(1);
+    expect(child.killCalls).toBe(1);
+    expectChildClean(child as unknown as ChildProcess);
+    expect(() => child.emit('close', null, 'SIGKILL')).not.toThrow();
+  });
+
   it('starts the provider with direct argv, isolated stdio, and no shell', async () => {
     const fixture = writeJsonFixture(
       'argv.js',

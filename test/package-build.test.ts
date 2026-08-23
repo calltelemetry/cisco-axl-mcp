@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -123,7 +123,10 @@ function runMalformedMcpConfigLoaderProbe(
   );
 }
 
-async function initializeMcp(binaryPath: string): Promise<{
+async function initializeMcp(
+  binaryPath: string,
+  environment: NodeJS.ProcessEnv = commandEnvironment()
+): Promise<{
   response: Record<string, unknown>;
   stdout: string;
   stderr: string;
@@ -131,7 +134,7 @@ async function initializeMcp(binaryPath: string): Promise<{
   return new Promise((resolvePromise, reject) => {
     const child = spawn(binaryPath, [], {
       cwd: workspaceRoot,
-      env: commandEnvironment(),
+      env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -187,12 +190,13 @@ async function initializeMcp(binaryPath: string): Promise<{
 
 async function listMcpTools(
   binaryPath: string,
-  cwd: string
+  cwd: string,
+  environment: NodeJS.ProcessEnv = commandEnvironment()
 ): Promise<{ response: Record<string, unknown>; stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(binaryPath, [], {
       cwd,
-      env: commandEnvironment(),
+      env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -611,4 +615,48 @@ describe('published package distribution', () => {
       },
     });
   }, 20_000);
+
+  it('initializes an installed provider before exposing the fixed-target MCP surface', async () => {
+    const provider = join(tempRoot, 'credential-provider');
+    await writeFile(
+      provider,
+      '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ username: "provider-user", password: "provider-password" }));\n',
+      { mode: 0o700 }
+    );
+    await chmod(provider, 0o700);
+    const mcp = join(
+      dirname(dirname(artifacts.installed.root)),
+      '.bin',
+      executableName('cisco-axl-mcp')
+    );
+    const environment = {
+      ...commandEnvironment(),
+      CUCM_HOST: 'fixed.example.test',
+      CUCM_VERSION: '11.5',
+      AXL_MCP_CREDENTIAL_PROVIDER: JSON.stringify([provider]),
+      AXL_MCP_CREDENTIAL_REFRESH_ON_SIGHUP: 'false',
+    };
+
+    const initialized = await initializeMcp(mcp, environment);
+    expect(initialized.stdout.trim().split('\n')).toHaveLength(1);
+    expect(initialized.response).toMatchObject({
+      jsonrpc: '2.0',
+      result: { serverInfo: { name: 'cisco-axl-mcp' } },
+    });
+    expect(initialized.stderr).not.toContain('provider-password');
+
+    const listed = await listMcpTools(mcp, tempRoot, environment);
+    const tools = (listed.response.result as { tools: Array<Record<string, unknown>> }).tools;
+    expect(tools.map(tool => tool.name)).toEqual(
+      expect.arrayContaining([
+        'axl_execute',
+        'axl_list_objects',
+        'axl_list_operations',
+        'axl_describe_operation',
+      ])
+    );
+    expect(JSON.stringify(tools)).not.toContain('credentialGeneration');
+    expect(JSON.stringify(tools)).not.toContain('cucm_username');
+    expect(JSON.stringify(tools)).not.toContain('cucm_password');
+  }, 30_000);
 });

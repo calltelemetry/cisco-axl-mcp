@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleTool } from '../src/tools/index';
 import type { AxlRunner } from '../src/tools/types';
 import type { RunAxlOptions } from '../src/lib/axl-runner';
@@ -7,6 +7,8 @@ import {
   AXL_ACTION_OPERATIONS,
 } from '../src/types/generated/axl-objects';
 import type { ResolvedMcpConfig } from '../src/lib/tool-config';
+import type { AxlToolRuntime } from '../src/lib/credential-resolver';
+import type { CredentialSnapshot, CredentialSource } from '../src/lib/credential-source';
 
 // These legacy execution-path tests intentionally exercise the deprecated
 // compatibility contract. Secure-by-default coverage lives in credentials and
@@ -165,6 +167,132 @@ describe('MCP execution policy boundary', () => {
         }),
       }),
     ]);
+  });
+});
+
+describe('provider-mode MCP admission', () => {
+  function providerConfig(): ResolvedMcpConfig {
+    return testConfig({
+      allowInlineCredentials: false,
+      enabledObjects: new Set(['Phone']),
+      credentialProvider: {
+        argv: ['/opt/ct/bin/provider'],
+        ttlMs: 30_000,
+        maxStaleMs: 0,
+        timeoutMs: 1_000,
+        refreshOnSighup: false,
+      },
+      fixedTarget: { host: 'fixed.example.test', version: '11.5' },
+    });
+  }
+
+  function sourceWith(snapshot: CredentialSnapshot): CredentialSource {
+    return {
+      initialize: async () => snapshot,
+      current: () => snapshot,
+      refresh: async () => snapshot,
+      shutdown: async () => undefined,
+    };
+  }
+
+  function snapshot(generation = 3): CredentialSnapshot {
+    return {
+      material: { username: 'provider-user', password: 'provider-password' },
+      generation,
+      resolvedAtMs: 1_000,
+      expiresAtMs: 100_000,
+      staleUntilMs: 100_000,
+      identityDigest: `digest-${generation}`,
+    };
+  }
+
+  function runtime(source: CredentialSource): AxlToolRuntime {
+    return {
+      credentialSource: source,
+      startupEnvironment: {
+        CUCM_HOST: 'live-mutated-host.example.test',
+        CUCM_VERSION: '15.0',
+        CUCM_USERNAME: 'live-mutated-user',
+        CUCM_PASSWORD: 'live-mutated-password',
+      },
+      now: () => 1_500,
+    };
+  }
+
+  it('passes one fixed-target provider snapshot to the runner without MCP credential fields', async () => {
+    const calls: RunAxlOptions[] = [];
+    const runner: AxlRunner = {
+      runAxl: async options => {
+        calls.push(options);
+        return { ok: true };
+      },
+    };
+    const config = providerConfig();
+    const result = await handleTool(
+      'axl_execute',
+      { cucm_version: '11.5', operation: 'getPhone', data: { name: 'SEP001122334455' } },
+      runner,
+      config,
+      undefined,
+      runtime(sourceWith(snapshot()))
+    );
+
+    expect(result).toBeTruthy();
+    expect(calls[0]?.request.credentials).toEqual({
+      host: 'fixed.example.test',
+      username: 'provider-user',
+      password: 'provider-password',
+      version: '11.5',
+      credentialGeneration: 3,
+    });
+  });
+
+  it('rejects inline provider target and credentials before runner dispatch', async () => {
+    const runner: AxlRunner = { runAxl: vi.fn().mockResolvedValue({ ok: true }) };
+    const config = providerConfig();
+    await expect(
+      handleTool(
+        'axl_execute',
+        {
+          cucm_host: 'inline-host.example.test',
+          cucm_username: 'inline-user',
+          cucm_password: 'inline-password',
+          cucm_version: '11.5',
+          operation: 'getPhone',
+          data: { name: 'SEP001122334455' },
+        },
+        runner,
+        config,
+        undefined,
+        runtime(sourceWith(snapshot()))
+      )
+    ).rejects.toMatchObject({ data: { policyCode: 'AXL_INLINE_CREDENTIALS_DISABLED' } });
+    expect(runner.runAxl).not.toHaveBeenCalled();
+  });
+
+  it('pins discovery to the fixed provider version and uses it when omitted', async () => {
+    const config = providerConfig();
+    const runtimeValue = runtime(sourceWith(snapshot()));
+    const omitted = await handleTool(
+      'axl_list_objects',
+      {},
+      mockApi,
+      config,
+      undefined,
+      runtimeValue
+    );
+    expect(parseResult(omitted).wsdlVersion).toBe('11.5');
+
+    await expect(
+      handleTool(
+        'axl_list_objects',
+        { cucm_version: '14.0' },
+        mockApi,
+        config,
+        undefined,
+        runtimeValue
+      )
+    ).rejects.toMatchObject({ data: { policyCode: 'AXL_TARGET_VERSION_DRIFT' } });
   });
 });
 

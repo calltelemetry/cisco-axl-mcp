@@ -3,6 +3,8 @@ export interface CucmCredentials {
   username: string;
   password: string;
   version: string;
+  /** Provider-mode admission generation; static and CLI callers omit it. */
+  readonly credentialGeneration?: number;
 }
 
 export interface ToolCredentialOverrides {

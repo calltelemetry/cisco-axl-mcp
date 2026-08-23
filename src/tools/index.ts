@@ -1,7 +1,7 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolDefinition, AxlRunner } from './types';
 import { jsonResponse } from './types';
-import { resolveCredentials } from '../lib/credential-resolver';
+import { resolveAdmittedCredentials, type AxlToolRuntime } from '../lib/credential-resolver';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../lib/tool-config';
 import { toMcpError } from '../types/axl/errors';
 import {
@@ -38,8 +38,24 @@ async function loadDiscoveryArtifacts(version: SupportedCucmVersion): Promise<Di
   return pending;
 }
 
-function resolveDiscoveryVersion(args: Record<string, unknown>): SupportedCucmVersion {
-  const requested = args.cucm_version ?? process.env.CUCM_VERSION;
+function resolveDiscoveryVersion(
+  args: Record<string, unknown>,
+  config: ResolvedMcpConfig,
+  runtime?: AxlToolRuntime
+): SupportedCucmVersion {
+  const fixedVersion = config.fixedTarget?.version;
+  const requested =
+    fixedVersion !== undefined
+      ? args.cucm_version === undefined
+        ? fixedVersion
+        : args.cucm_version
+      : (args.cucm_version ?? runtime?.startupEnvironment.CUCM_VERSION ?? process.env.CUCM_VERSION);
+  if (fixedVersion !== undefined && requested !== fixedVersion) {
+    throw new AxlPolicyError(
+      'AXL_TARGET_VERSION_DRIFT',
+      `Provider mode is pinned to CUCM ${fixedVersion}`
+    );
+  }
   if (typeof requested !== 'string' || requested.length === 0) {
     throw new McpError(ErrorCode.InvalidParams, 'Missing CUCM_VERSION or cucm_version');
   }
@@ -439,8 +455,18 @@ export async function handleTool(
   args: unknown,
   runner: AxlRunner,
   config: ResolvedMcpConfig = loadMcpConfig(),
-  signal?: AbortSignal
+  signalOrRuntime?: AbortSignal | AxlToolRuntime,
+  runtime?: AxlToolRuntime
 ) {
+  const runtimeIsProvided = (value: unknown): value is AxlToolRuntime =>
+    typeof value === 'object' &&
+    value !== null &&
+    'credentialSource' in value &&
+    'startupEnvironment' in value &&
+    'now' in value;
+  const requestRuntime =
+    runtime ?? (runtimeIsProvided(signalOrRuntime) ? signalOrRuntime : undefined);
+  const requestSignal = runtimeIsProvided(signalOrRuntime) ? undefined : signalOrRuntime;
   try {
     if (MCP_TOOL_NAMES.has(name)) {
       assertInlineCredentialPolicy(
@@ -451,7 +477,7 @@ export async function handleTool(
     switch (name) {
       case 'axl_list_objects': {
         const obj = assertRecord(args);
-        const version = resolveDiscoveryVersion(obj);
+        const version = resolveDiscoveryVersion(obj, config, requestRuntime);
         const { artifacts } = await loadDiscoveryArtifacts(version);
         const enabled = config.enabledObjects;
         const objects = enabled
@@ -465,7 +491,7 @@ export async function handleTool(
       }
       case 'axl_list_operations': {
         const obj = assertRecord(args);
-        const version = resolveDiscoveryVersion(obj);
+        const version = resolveDiscoveryVersion(obj, config, requestRuntime);
         const { artifacts } = await loadDiscoveryArtifacts(version);
         const objectName = requireString(obj, 'objectName');
         const ops = requireAuthorizedObjectOperations(objectName, artifacts, config);
@@ -477,7 +503,7 @@ export async function handleTool(
       }
       case 'axl_describe_operation': {
         const obj = assertRecord(args);
-        const version = resolveDiscoveryVersion(obj);
+        const version = resolveDiscoveryVersion(obj, config, requestRuntime);
         const { artifacts } = await loadDiscoveryArtifacts(version);
         const operationName = requireString(obj, 'operationName');
         const schema = artifacts.operationSchemas[operationName];
@@ -492,10 +518,20 @@ export async function handleTool(
       }
       case 'axl_execute': {
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(
+        if (config.credentialProvider && !requestRuntime) {
+          throw new AxlPolicyError(
+            'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+            'Provider credentials are unavailable before MCP startup completes'
+          );
+        }
+        const credentials = await resolveAdmittedCredentials(
           extractCredentialOverrides(obj, config.allowInlineCredentials),
-          process.env,
-          { allowInlineCredentials: config.allowInlineCredentials }
+          config,
+          requestRuntime ?? {
+            credentialSource: undefined as never,
+            startupEnvironment: process.env,
+            now: () => Date.now(),
+          }
         );
         const version = credentials.version;
         if (!isSupportedCucmVersion(version)) {
@@ -542,16 +578,26 @@ export async function handleTool(
             source: 'mcp',
             validationMode: 'strict',
             ...(mutationGrant !== undefined && { mutationGrant }),
-            ...(signal && { signal }),
+            ...(requestSignal && { signal: requestSignal }),
           })
         );
       }
       case 'axl_preview_mutation': {
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(
+        if (config.credentialProvider && !requestRuntime) {
+          throw new AxlPolicyError(
+            'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+            'Provider credentials are unavailable before MCP startup completes'
+          );
+        }
+        const credentials = await resolveAdmittedCredentials(
           extractCredentialOverrides(obj, config.allowInlineCredentials),
-          process.env,
-          { allowInlineCredentials: config.allowInlineCredentials }
+          config,
+          requestRuntime ?? {
+            credentialSource: undefined as never,
+            startupEnvironment: process.env,
+            now: () => Date.now(),
+          }
         );
         const version = credentials.version;
         if (!isSupportedCucmVersion(version)) {
@@ -608,7 +654,7 @@ export async function handleTool(
           },
           source: 'mcp',
           validationMode: 'strict',
-          ...(signal && { signal }),
+          ...(requestSignal && { signal: requestSignal }),
         });
         return jsonResponse({
           mutationGrant,
@@ -618,7 +664,7 @@ export async function handleTool(
       }
       case 'axl_list_action_operations': {
         const obj = assertRecord(args);
-        const version = resolveDiscoveryVersion(obj);
+        const version = resolveDiscoveryVersion(obj, config, requestRuntime);
         const { artifacts } = await loadDiscoveryArtifacts(version);
         const objectFilter = typeof obj.objectName === 'string' ? obj.objectName : undefined;
         const verbFilter = typeof obj.verb === 'string' ? obj.verb : undefined;
@@ -642,10 +688,20 @@ export async function handleTool(
           );
         }
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(
+        if (config.credentialProvider && !requestRuntime) {
+          throw new AxlPolicyError(
+            'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+            'Provider credentials are unavailable before MCP startup completes'
+          );
+        }
+        const credentials = await resolveAdmittedCredentials(
           extractCredentialOverrides(obj, config.allowInlineCredentials),
-          process.env,
-          { allowInlineCredentials: config.allowInlineCredentials }
+          config,
+          requestRuntime ?? {
+            credentialSource: undefined as never,
+            startupEnvironment: process.env,
+            now: () => Date.now(),
+          }
         );
         const sql = requireString(obj, 'sql');
         const mutationGrant = mutationGrantFromArgs(obj);
@@ -661,7 +717,7 @@ export async function handleTool(
             source: 'mcp',
             validationMode: 'strict',
             ...(mutationGrant !== undefined && { mutationGrant }),
-            ...(signal && { signal }),
+            ...(requestSignal && { signal: requestSignal }),
           })
         );
       }
@@ -673,10 +729,20 @@ export async function handleTool(
           );
         }
         const obj = assertRecord(args);
-        const credentials = resolveCredentials(
+        if (config.credentialProvider && !requestRuntime) {
+          throw new AxlPolicyError(
+            'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+            'Provider credentials are unavailable before MCP startup completes'
+          );
+        }
+        const credentials = await resolveAdmittedCredentials(
           extractCredentialOverrides(obj, config.allowInlineCredentials),
-          process.env,
-          { allowInlineCredentials: config.allowInlineCredentials }
+          config,
+          requestRuntime ?? {
+            credentialSource: undefined as never,
+            startupEnvironment: process.env,
+            now: () => Date.now(),
+          }
         );
         const sql = requireString(obj, 'sql');
         const mutationGrant = mutationGrantFromArgs(obj);
@@ -692,7 +758,7 @@ export async function handleTool(
             source: 'mcp',
             validationMode: 'strict',
             ...(mutationGrant !== undefined && { mutationGrant }),
-            ...(signal && { signal }),
+            ...(requestSignal && { signal: requestSignal }),
           })
         );
       }

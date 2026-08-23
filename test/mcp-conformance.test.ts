@@ -7,6 +7,8 @@ import { getTools, handleTool } from '../src/tools/index';
 import type { AxlRunner } from '../src/tools/types';
 import type { ResolvedMcpConfig } from '../src/lib/tool-config';
 import { CiscoAxlMcpServer, startMcp } from '../src/index';
+import type { CredentialSnapshot, CredentialSource } from '../src/lib/credential-source';
+import type { AxlToolRuntime } from '../src/lib/credential-resolver';
 import { createAxlRunner } from '../src/lib/axl-runner';
 import { MutationGrantAuthority, MutationGrantReplayStore } from '../src/lib/mutation-grants';
 import { AxlAPIService, STRICT_AXL_EXECUTION_POLICY } from '../src/services/axl/index';
@@ -46,6 +48,135 @@ describe('MCP Protocol Conformance', () => {
   // version-artifact import rather than the MCP behavior under test.
   beforeAll(async () => {
     await loadAxlVersionArtifacts('14.0');
+  });
+
+  function providerConfig(overrides: Partial<ResolvedMcpConfig> = {}): ResolvedMcpConfig {
+    return testConfig({
+      credentialProvider: {
+        argv: ['/opt/ct/bin/provider'],
+        ttlMs: 30_000,
+        maxStaleMs: 0,
+        timeoutMs: 1_000,
+        refreshOnSighup: true,
+      },
+      fixedTarget: { host: 'fixed.example.test', version: '11.5' },
+      ...overrides,
+    });
+  }
+
+  function source(
+    events: string[],
+    initialize: () => Promise<CredentialSnapshot>
+  ): CredentialSource {
+    return {
+      initialize,
+      current: () => ({
+        material: { username: 'provider-user', password: 'provider-password' },
+        generation: 1,
+        resolvedAtMs: 1_000,
+        expiresAtMs: 100_000,
+        staleUntilMs: 100_000,
+        identityDigest: 'digest',
+      }),
+      refresh: async trigger => {
+        events.push(`refresh:${trigger}`);
+        return {
+          material: { username: 'provider-user', password: 'provider-password' },
+          generation: 1,
+          resolvedAtMs: 1_000,
+          expiresAtMs: 100_000,
+          staleUntilMs: 100_000,
+          identityDigest: 'digest',
+        };
+      },
+      shutdown: async () => {
+        events.push('source:shutdown');
+      },
+    };
+  }
+
+  function runtime(credentialSource: CredentialSource): AxlToolRuntime {
+    return {
+      credentialSource,
+      startupEnvironment: { CUCM_HOST: 'fixed.example.test', CUCM_VERSION: '11.5' },
+      now: () => 1_500,
+    };
+  }
+
+  it('initializes provider credentials before constructing and connecting the MCP server', async () => {
+    const events: string[] = [];
+    const credentialSource = source(events, async () => {
+      events.push('source:initialize');
+      return {
+        material: { username: 'provider-user', password: 'provider-password' },
+        generation: 1,
+        resolvedAtMs: 1_000,
+        expiresAtMs: 100_000,
+        staleUntilMs: 100_000,
+        identityDigest: 'digest',
+      };
+    });
+    const run = vi.spyOn(CiscoAxlMcpServer.prototype, 'run').mockImplementation(async function () {
+      events.push('server:connect');
+    });
+
+    try {
+      await startMcp(
+        providerConfig({
+          credentialProvider: {
+            argv: ['/opt/ct/bin/provider'],
+            ttlMs: 30_000,
+            maxStaleMs: 0,
+            timeoutMs: 1_000,
+            refreshOnSighup: false,
+          },
+        }),
+        runtime(credentialSource)
+      );
+      expect(events.slice(0, 2)).toEqual(['source:initialize', 'server:connect']);
+    } finally {
+      run.mockRestore();
+    }
+  });
+
+  it('does not construct or connect MCP when provider initialization fails', async () => {
+    const credentialSource = source([], async () => {
+      throw new Error('provider failed');
+    });
+    const construct = vi.spyOn(CiscoAxlMcpServer.prototype, 'run');
+
+    await expect(startMcp(providerConfig(), runtime(credentialSource))).rejects.toThrow(
+      'provider failed'
+    );
+    expect(construct).not.toHaveBeenCalled();
+    construct.mockRestore();
+  });
+
+  it('refreshes once for enabled SIGHUP and unregisters before source shutdown', async () => {
+    const events: string[] = [];
+    const credentialSource = source(events, async () => ({
+      material: { username: 'provider-user', password: 'provider-password' },
+      generation: 1,
+      resolvedAtMs: 1_000,
+      expiresAtMs: 100_000,
+      staleUntilMs: 100_000,
+      identityDigest: 'digest',
+    }));
+    const server = new CiscoAxlMcpServer(providerConfig(), runtime(credentialSource));
+    try {
+      process.emit('SIGHUP');
+      process.emit('SIGHUP');
+      await vi.waitFor(() =>
+        expect(events.filter(event => event === 'refresh:sighup')).toHaveLength(1)
+      );
+      await server.shutdown();
+      expect(events.at(-1)).toBe('source:shutdown');
+      process.emit('SIGHUP');
+      await new Promise(resolve => setImmediate(resolve));
+      expect(events.filter(event => event === 'refresh:sighup')).toHaveLength(1);
+    } finally {
+      await server.shutdown().catch(() => undefined);
+    }
   });
 
   it('mints a server-owned preview grant and rejects replay through MCP tool calls', async () => {

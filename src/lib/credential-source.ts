@@ -4,7 +4,7 @@ import type { ResolvedMcpConfig } from './tool-config';
 import { AxlPolicyError } from './policy-error';
 import { emitCredentialDiagnostic, type CredentialDiagnosticEvent } from './runtime-diagnostics';
 
-const PROVIDER_FAILURE_CODE = 'AXL_CREDENTIAL_PROVIDER_FAILED';
+const PROVIDER_FAILURE_CODE = 'AXL_CREDENTIAL_PROVIDER_INVALID';
 const CREDENTIALS_UNAVAILABLE_CODE = 'AXL_CREDENTIALS_UNAVAILABLE';
 const PROVIDER_FAILURE_MESSAGE = 'Credential provider failed';
 const CREDENTIALS_UNAVAILABLE_MESSAGE = 'Credentials unavailable';
@@ -285,6 +285,7 @@ export class CommandCredentialSource implements CredentialSource {
   private snapshot: CredentialSnapshot | undefined;
   private inFlight: Promise<CredentialSnapshot> | undefined;
   private activeChild: ChildProcess | undefined;
+  private activeAbort: (() => void) | undefined;
   private shutDown = false;
 
   constructor(config: ResolvedMcpConfig, hooks: CredentialSourceHooks = {}) {
@@ -304,8 +305,8 @@ export class CommandCredentialSource implements CredentialSource {
     if (this.shutDown) throw providerFailure();
     const snapshot = this.snapshot;
     if (!snapshot) throw providerFailure();
-    if (nowMs <= snapshot.expiresAtMs) return snapshot;
-    if (nowMs <= snapshot.staleUntilMs) {
+    if (nowMs < snapshot.expiresAtMs) return snapshot;
+    if (nowMs < snapshot.staleUntilMs) {
       this.emit('credential_snapshot_stale');
       return snapshot;
     }
@@ -332,13 +333,8 @@ export class CommandCredentialSource implements CredentialSource {
   async shutdown(): Promise<void> {
     this.shutDown = true;
     const child = this.activeChild;
-    if (child) {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // The child may have exited between the reference and kill call.
-      }
-    }
+    this.activeAbort?.();
+    if (child && this.activeChild === child) this.killChild(child);
     const inFlight = this.inFlight;
     if (inFlight) {
       try {
@@ -346,6 +342,14 @@ export class CommandCredentialSource implements CredentialSource {
       } catch {
         // Shutdown must settle the child without exposing provider details.
       }
+    }
+  }
+
+  private killChild(child: ChildProcess): void {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // The child may have exited between the reference and kill call.
     }
   }
 
@@ -409,11 +413,7 @@ export class CommandCredentialSource implements CredentialSource {
       const stdout = child.stdout;
       const stderr = child.stderr;
       if (!stdout || !stderr) {
-        try {
-          child.kill();
-        } catch {
-          // Ignore a child that exited before streams were attached.
-        }
+        this.killChild(child);
         this.activeChild = undefined;
         reject(providerFailure());
         return;
@@ -422,67 +422,78 @@ export class CommandCredentialSource implements CredentialSource {
       let stdoutBytes = 0;
       let stderrBytes = 0;
       const stdoutChunks: Buffer[] = [];
-      let failed = false;
       let terminationRequested = false;
       let settled = false;
-      const timeout = setTimeout(() => {
-        failed = true;
-        terminate();
-      }, this.providerConfig.timeoutMs);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
 
-      const terminate = (): void => {
-        if (terminationRequested) return;
-        terminationRequested = true;
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // The close event still settles a child that already exited.
-        }
+      const cleanup = (): void => {
+        if (timeout !== undefined) clearTimeout(timeout);
+        timeout = undefined;
+        stdout.removeListener('data', onStdoutData);
+        stderr.removeListener('data', onStderrData);
+        child.removeListener('error', onError);
+        child.removeListener('close', onClose);
+        stdout.resume();
+        stderr.resume();
+        stdout.destroy();
+        stderr.destroy();
+        if (this.activeChild === child) this.activeChild = undefined;
+        if (this.activeAbort === failAndTerminate) this.activeAbort = undefined;
       };
-      const failAndTerminate = (): void => {
-        failed = true;
-        terminate();
-      };
-      const finish = (error?: Error): void => {
+      const settleFailure = (error = providerFailure()): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
-        if (this.activeChild === child) this.activeChild = undefined;
-        if (error) {
-          reject(error);
-          return;
-        }
+        cleanup();
+        reject(error);
+      };
+      const settleSuccess = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         try {
           resolve(parseProviderOutput(Buffer.concat(stdoutChunks, stdoutBytes)));
         } catch {
           reject(providerFailure());
         }
       };
-
-      stdout.on('data', chunk => {
+      const terminate = (): void => {
+        if (terminationRequested) return;
+        terminationRequested = true;
+        this.killChild(child);
+      };
+      const failAndTerminate = (): void => {
+        if (settled) return;
+        terminate();
+        settleFailure();
+      };
+      const onStdoutData = (chunk: Buffer | string): void => {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         stdoutBytes += bytes.byteLength;
         if (stdoutBytes > MAX_PROVIDER_OUTPUT_BYTES) {
           failAndTerminate();
           return;
         }
-        if (!failed) stdoutChunks.push(bytes);
-      });
-      stderr.on('data', chunk => {
+        stdoutChunks.push(bytes);
+      };
+      const onStderrData = (chunk: Buffer | string): void => {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         stderrBytes += bytes.byteLength;
         if (stderrBytes > MAX_PROVIDER_OUTPUT_BYTES) failAndTerminate();
-      });
-      child.once('error', () => {
+      };
+      const onError = (): void => {
         failAndTerminate();
-      });
-      child.once('close', (code, signal) => {
-        if (failed || code !== 0 || signal !== null) {
-          finish(providerFailure());
-          return;
-        }
-        finish();
-      });
+      };
+      const onClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (code !== 0 || signal !== null) settleFailure();
+        else settleSuccess();
+      };
+
+      stdout.on('data', onStdoutData);
+      stderr.on('data', onStderrData);
+      child.once('error', onError);
+      child.once('close', onClose);
+      this.activeAbort = failAndTerminate;
+      timeout = setTimeout(failAndTerminate, this.providerConfig.timeoutMs);
     });
   }
 }

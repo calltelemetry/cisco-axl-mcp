@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../src/lib/tool-config';
 import { createCredentialSource, type CredentialSourceHooks } from '../src/lib/credential-source';
 
@@ -73,6 +75,26 @@ function hooks(now: () => number, events: string[], spawn = realSpawn): Credenti
   };
 }
 
+class NeverCloseChild extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  killCalls = 0;
+
+  kill(): boolean {
+    this.killCalls += 1;
+    return true;
+  }
+}
+
+function expectChildClean(child: ChildProcess): void {
+  expect(child.listenerCount('error')).toBe(0);
+  expect(child.listenerCount('close')).toBe(0);
+  expect(child.stdout?.listenerCount('data')).toBe(0);
+  expect(child.stderr?.listenerCount('data')).toBe(0);
+  expect(child.stdout?.destroyed).toBe(true);
+  expect(child.stderr?.destroyed).toBe(true);
+}
+
 describe('StaticEnvCredentialSource', () => {
   it('snapshots static environment credentials once at generation zero', async () => {
     const env: NodeJS.ProcessEnv = {
@@ -126,6 +148,48 @@ describe('CommandCredentialSource', () => {
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.material)).toBe(true);
     expect(events).toContain('credential_refresh_started');
+    await source.shutdown();
+  });
+
+  it('treats expiry as exclusive and staleUntil as an exclusive upper bound', async () => {
+    const fixture = writeJsonFixture(
+      'exclusive-window.js',
+      '{"username":"window-user","password":"window-password"}'
+    );
+    let now = 1_000;
+    const source = createCredentialSource(
+      providerConfig(fixture, { ttlS: 30, maxStaleS: 10 }),
+      {},
+      hooks(() => now, [])
+    );
+    const snapshot = await source.initialize();
+
+    now = snapshot.expiresAtMs;
+    expect(source.current(now)).toBe(snapshot);
+    now = snapshot.staleUntilMs;
+    expect(() => source.current(now)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIALS_UNAVAILABLE' })
+    );
+    await source.shutdown();
+  });
+
+  it('fails at exact expiry when maximum stale is zero', async () => {
+    const fixture = writeJsonFixture(
+      'exclusive-zero-stale.js',
+      '{"username":"zero-user","password":"zero-password"}'
+    );
+    let now = 1_000;
+    const source = createCredentialSource(
+      providerConfig(fixture, { ttlS: 30, maxStaleS: 0 }),
+      {},
+      hooks(() => now, [])
+    );
+    const snapshot = await source.initialize();
+
+    now = snapshot.expiresAtMs;
+    expect(() => source.current(now)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIALS_UNAVAILABLE' })
+    );
     await source.shutdown();
   });
 
@@ -289,7 +353,7 @@ describe('CommandCredentialSource', () => {
 
     const failure = await source.initialize().catch(error => error);
 
-    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_FAILED' });
+    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
     expect(String(failure)).toBe('AxlPolicyError: Credential provider failed');
     expect(String(failure)).not.toMatch(
       /user-secret|other-secret|password-secret|stderr-secret|host-secret|trailing-secret|malformed-secret/
@@ -313,7 +377,7 @@ describe('CommandCredentialSource', () => {
 
     const failure = await source.initialize().catch(error => error);
 
-    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_FAILED' });
+    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
     expect(String(failure)).not.toContain(stdoutSecret);
     expect(events).toContain('credential_refresh_failed');
     await source.shutdown();
@@ -333,7 +397,7 @@ describe('CommandCredentialSource', () => {
 
     const failure = await source.initialize().catch(error => error);
 
-    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_FAILED' });
+    expect(failure).toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
     expect(String(failure)).not.toContain(stderrSecret);
     await source.shutdown();
   });
@@ -355,7 +419,7 @@ describe('CommandCredentialSource', () => {
     now = 31_001;
 
     await expect(source.refresh('ttl')).rejects.toMatchObject({
-      code: 'AXL_CREDENTIAL_PROVIDER_FAILED',
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
     });
     expect(source.current(now)).toBe(first);
     now = 41_001;
@@ -382,7 +446,7 @@ describe('CommandCredentialSource', () => {
     now = 31_001;
 
     await expect(source.refresh('ttl')).rejects.toMatchObject({
-      code: 'AXL_CREDENTIAL_PROVIDER_FAILED',
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
     });
     expect(() => source.current(now)).toThrowError(
       expect.objectContaining({ code: 'AXL_CREDENTIALS_UNAVAILABLE' })
@@ -402,10 +466,107 @@ describe('CommandCredentialSource', () => {
 
     const shutdownStarted = Date.now();
     await source.shutdown();
-    await expect(inFlight).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_FAILED' });
+    await expect(inFlight).rejects.toMatchObject({ code: 'AXL_CREDENTIAL_PROVIDER_INVALID' });
     await expect(source.refresh('ttl')).rejects.toMatchObject({
-      code: 'AXL_CREDENTIAL_PROVIDER_FAILED',
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
     });
     expect(Date.now() - shutdownStarted).toBeLessThan(2_000);
+  });
+
+  it.each(['timeout', 'stdout cap', 'stderr cap', 'error'])(
+    'settles promptly and cleans up when a child never emits close after %s',
+    async scenario => {
+      const probe = new NeverCloseChild();
+      const source = createCredentialSource(
+        providerConfig('/probe', { timeoutMs: 100 }),
+        {},
+        hooks(
+          () => 1_000,
+          [],
+          () => probe as unknown as ChildProcess
+        )
+      );
+      const refresh = source.refresh('startup');
+      if (scenario === 'stdout cap') probe.stdout.write(Buffer.alloc(65_537, 0x78));
+      if (scenario === 'stderr cap') probe.stderr.write(Buffer.alloc(65_537, 0x78));
+      if (scenario === 'error') probe.emit('error', new Error('provider-secret-error'));
+
+      const started = Date.now();
+      await expect(refresh).rejects.toMatchObject({
+        code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
+      });
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(probe.killCalls).toBe(1);
+      expectChildClean(probe as unknown as ChildProcess);
+      expect(() => probe.emit('close', null, 'SIGKILL')).not.toThrow();
+      await source.shutdown();
+    }
+  );
+
+  it('settles shutdown promptly when the active child never emits close', async () => {
+    const probe = new NeverCloseChild();
+    const source = createCredentialSource(
+      providerConfig('/probe', { timeoutMs: 5_000 }),
+      {},
+      hooks(
+        () => 1_000,
+        [],
+        () => probe as unknown as ChildProcess
+      )
+    );
+    const refresh = source.refresh('startup');
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const started = Date.now();
+    await source.shutdown();
+    await expect(refresh).rejects.toMatchObject({
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(probe.killCalls).toBe(1);
+    expectChildClean(probe as unknown as ChildProcess);
+  });
+
+  it('removes child and stream listeners after successful and close-failure settlement', async () => {
+    let successfulChild: ChildProcess | undefined;
+    const successFixture = writeJsonFixture(
+      'cleanup-success.js',
+      '{"username":"cleanup-user","password":"cleanup-password"}'
+    );
+    const successSource = createCredentialSource(
+      providerConfig(successFixture),
+      {},
+      hooks(
+        () => 1_000,
+        [],
+        (command, args, options) => {
+          successfulChild = realSpawn(command, args, options);
+          return successfulChild;
+        }
+      )
+    );
+    await successSource.initialize();
+    expectChildClean(successfulChild!);
+    await successSource.shutdown();
+
+    let failedChild: ChildProcess | undefined;
+    const failureFixture = writeFixture('cleanup-failure.js', 'process.exit(3);');
+    const failureSource = createCredentialSource(
+      providerConfig(failureFixture),
+      {},
+      hooks(
+        () => 1_000,
+        [],
+        (command, args, options) => {
+          failedChild = realSpawn(command, args, options);
+          return failedChild;
+        }
+      )
+    );
+    await expect(failureSource.initialize()).rejects.toMatchObject({
+      code: 'AXL_CREDENTIAL_PROVIDER_INVALID',
+    });
+    expectChildClean(failedChild!);
+    await failureSource.shutdown();
   });
 });

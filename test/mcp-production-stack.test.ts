@@ -75,6 +75,8 @@ function testConfig(overrides: Partial<ResolvedMcpConfig> = {}): ResolvedMcpConf
     allowInlineCredentials: true,
     requestTimeoutMs: 30_000,
     clientCacheMaxEntries: 4,
+    credentialProvider: null,
+    fixedTarget: null,
     ...overrides,
   };
 }

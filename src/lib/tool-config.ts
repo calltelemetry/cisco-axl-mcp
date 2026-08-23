@@ -49,8 +49,8 @@ export interface ResolvedMcpConfig {
   readonly allowInlineCredentials: boolean;
   readonly requestTimeoutMs: number;
   readonly clientCacheMaxEntries: number;
-  readonly credentialProvider?: ResolvedCredentialProviderConfig | null;
-  readonly fixedTarget?: { readonly host: string; readonly version: SupportedCucmVersion } | null;
+  readonly credentialProvider: ResolvedCredentialProviderConfig | null;
+  readonly fixedTarget: { readonly host: string; readonly version: SupportedCucmVersion } | null;
 }
 
 function invalidConfig(message: string): never {
@@ -337,27 +337,38 @@ export function loadMcpConfig(
     'client_cache_max_entries',
     256
   );
-  const jsonCredentialProvider = configAliasValue(
-    config,
-    'credential_provider',
-    'credentialProvider'
+  const hasEnvironmentCredentialProvider = Object.hasOwn(
+    environment,
+    'AXL_MCP_CREDENTIAL_PROVIDER'
   );
-  const jsonCredentialTtlS = configAliasValue(config, 'credential_ttl_s', 'credentialTtlS');
-  const jsonCredentialMaxStaleS = configAliasValue(
-    config,
-    'credential_max_stale_s',
-    'credentialMaxStaleS'
+  const hasEnvironmentCredentialTtlS = Object.hasOwn(environment, 'AXL_MCP_CREDENTIAL_TTL_S');
+  const hasEnvironmentCredentialMaxStaleS = Object.hasOwn(
+    environment,
+    'AXL_MCP_CREDENTIAL_MAX_STALE_S'
   );
-  const jsonCredentialProviderTimeoutMs = configAliasValue(
-    config,
-    'credential_provider_timeout_ms',
-    'credentialProviderTimeoutMs'
+  const hasEnvironmentCredentialProviderTimeoutMs = Object.hasOwn(
+    environment,
+    'AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS'
   );
-  const jsonCredentialRefreshOnSighup = configAliasValue(
-    config,
-    'credential_refresh_on_sighup',
-    'credentialRefreshOnSighup'
+  const hasEnvironmentCredentialRefreshOnSighup = Object.hasOwn(
+    environment,
+    'AXL_MCP_CREDENTIAL_REFRESH_ON_SIGHUP'
   );
+  const jsonCredentialProvider = hasEnvironmentCredentialProvider
+    ? undefined
+    : configAliasValue(config, 'credential_provider', 'credentialProvider');
+  const jsonCredentialTtlS = hasEnvironmentCredentialTtlS
+    ? undefined
+    : configAliasValue(config, 'credential_ttl_s', 'credentialTtlS');
+  const jsonCredentialMaxStaleS = hasEnvironmentCredentialMaxStaleS
+    ? undefined
+    : configAliasValue(config, 'credential_max_stale_s', 'credentialMaxStaleS');
+  const jsonCredentialProviderTimeoutMs = hasEnvironmentCredentialProviderTimeoutMs
+    ? undefined
+    : configAliasValue(config, 'credential_provider_timeout_ms', 'credentialProviderTimeoutMs');
+  const jsonCredentialRefreshOnSighup = hasEnvironmentCredentialRefreshOnSighup
+    ? undefined
+    : configAliasValue(config, 'credential_refresh_on_sighup', 'credentialRefreshOnSighup');
   const parsedJsonCredentialProvider =
     jsonCredentialProvider === undefined ? undefined : parseProviderArgv(jsonCredentialProvider);
   const parsedJsonCredentialTtlS =

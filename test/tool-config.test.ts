@@ -77,6 +77,30 @@ describe('getEnabledTopLevelObjects', () => {
       });
     });
 
+    it('selects the environment provider before validating an invalid JSON provider', () => {
+      const environment = {
+        ...validEnvironment,
+        AXL_MCP_CONFIG: JSON.stringify({ credential_provider: ['relative/provider'] }),
+      };
+
+      expect(loadMcpConfig(environment, ['node', 'script.js']).credentialProvider?.argv).toEqual([
+        '/opt/ct/bin/axl-credentials',
+        '--asset-id',
+        'cucm-cluster',
+      ]);
+    });
+
+    it('selects the environment numeric setting before validating invalid JSON', () => {
+      const environment = {
+        ...validEnvironment,
+        AXL_MCP_CONFIG: JSON.stringify({ credential_ttl_s: 29 }),
+      };
+
+      expect(loadMcpConfig(environment, ['node', 'script.js']).credentialProvider?.ttlMs).toBe(
+        30_000
+      );
+    });
+
     it.each([
       ['credential_provider', 'credentialProvider'],
       ['credential_ttl_s', 'credentialTtlS'],

@@ -605,6 +605,7 @@ describe('getAxlClient', () => {
     const first = acquireAxlClientLease(generationOne);
     retireAxlClientGeneration(1);
     const second = acquireAxlClientLease(generationTwo);
+    first.release();
     retireAxlClientGeneration(2);
     const third = acquireAxlClientLease(generationThree);
 
@@ -612,7 +613,6 @@ describe('getAxlClient', () => {
     expect(() => acquireAxlClientLease(generationOne)).toThrowError(
       expect.objectContaining({ code: 'AXL_CREDENTIAL_GENERATION_RETIRED' })
     );
-    first.release();
     second.release();
     third.release();
   });
@@ -663,6 +663,27 @@ describe('getAxlClient', () => {
     clientObservations.dispatchTransport = false;
   });
 
+  it('aborts and settles lifecycle-less active transport during full cache shutdown', async () => {
+    const { acquireAxlClientLease, clearAxlClientCache } = await import('../src/lib/axl-client');
+    const credentials: CucmCredentials = {
+      host: 'lifecycle-less-shutdown.local',
+      username: 'admin',
+      password: 'shutdown-secret',
+      version: '14.0',
+    };
+    clientObservations.dispatchTransport = true;
+    const lease = acquireAxlClientLease(credentials);
+    const active = lease.client.executeOperation('getPhone', {});
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(1));
+
+    clearAxlClientCache();
+
+    await expect(active).rejects.toThrow('AXL request canceled');
+    expect(clientObservations.transportAbortCount).toBe(1);
+    lease.release();
+    clientObservations.dispatchTransport = false;
+  });
+
   it('finishes queued old-generation work after retirement before draining the entry', async () => {
     const { acquireAxlClientLease, getAxlClientCacheDiagnostics, retireAxlClientGeneration } =
       await import('../src/lib/axl-client');
@@ -697,6 +718,37 @@ describe('getAxlClient', () => {
       activeRequests: 0,
       queuedRequests: 0,
     });
+  });
+
+  it('blocks a second retirement while earlier active or queued work is draining', async () => {
+    const { getAxlClient, getAxlClientCacheDiagnostics, retireAxlClientGeneration } =
+      await import('../src/lib/axl-client');
+    const credentials: CucmCredentials = {
+      host: 'generation-rotation-busy.local',
+      username: 'admin',
+      password: 'rotation-secret',
+      version: '14.0',
+      credentialGeneration: 1,
+    };
+    let finishActive!: () => void;
+    clientObservations.nextOperationGate = new Promise<void>(resolve => {
+      finishActive = resolve;
+    });
+    const client = getAxlClient(credentials);
+    const active = client.executeOperation('getPhone', { active: true });
+    await vi.waitFor(() => expect(clientObservations.dispatchStarts).toBe(1));
+    const queued = client.executeOperation('getPhone', { queued: true });
+    expect(getAxlClientCacheDiagnostics().queuedRequests).toBe(1);
+
+    retireAxlClientGeneration(1);
+    expect(() => retireAxlClientGeneration(2)).toThrowError(
+      expect.objectContaining({ code: 'AXL_CREDENTIAL_ROTATION_BUSY' })
+    );
+
+    finishActive();
+    await expect(active).resolves.toEqual({ ok: true });
+    await expect(queued).resolves.toEqual({ ok: true });
+    expect(() => retireAxlClientGeneration(2)).not.toThrow();
   });
 
   it('drains the admitted entry when credentials mutate before idempotent release', async () => {

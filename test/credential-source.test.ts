@@ -281,6 +281,50 @@ describe('credential-source client retirement integration', () => {
     await sourceB.shutdown();
     clearAxlClientCache();
   });
+
+  it('fails closed when a prior generation is still draining, then permits the next rotation after drain', async () => {
+    const fixture = writeJsonFixture(
+      'rotation-busy.js',
+      '{"username":"generation-one","password":"password-one"}'
+    );
+    const retired: number[] = [];
+    const source = createCredentialSource(
+      providerConfig(fixture),
+      {},
+      { onRetireGeneration: generation => retired.push(generation) }
+    );
+    const first = await source.initialize();
+    const oldLease = acquireAxlClientLease({
+      host: 'fixed.example.test',
+      username: first.material.username,
+      password: first.material.password,
+      version: '11.5',
+      credentialGeneration: first.generation,
+      [CREDENTIAL_SCOPE]: first[CREDENTIAL_SCOPE],
+    });
+
+    writeJsonFixture('rotation-busy.js', '{"username":"generation-two","password":"password-two"}');
+    const second = await source.refresh('sighup');
+    expect(second.generation).toBe(2);
+    expect(retired).toEqual([1]);
+
+    writeJsonFixture(
+      'rotation-busy.js',
+      '{"username":"generation-three","password":"password-three"}'
+    );
+    await expect(source.refresh('sighup')).rejects.toMatchObject({
+      code: 'AXL_CREDENTIAL_ROTATION_BUSY',
+    });
+    expect(source.current(Date.now()).generation).toBe(2);
+    expect(retired).toEqual([1]);
+
+    oldLease.release();
+    const third = await source.refresh('sighup');
+    expect(third.generation).toBe(3);
+    expect(retired).toEqual([1, 2]);
+    await source.shutdown();
+    clearAxlClientCache();
+  });
 });
 
 describe('CommandCredentialSource', () => {

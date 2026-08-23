@@ -3,7 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:c
 import type { ResolvedMcpConfig } from './tool-config';
 import { AxlPolicyError } from './policy-error';
 import { emitCredentialDiagnostic, type CredentialDiagnosticEvent } from './runtime-diagnostics';
-import { retireAxlClientGeneration } from './axl-client';
+import { assertAxlClientGenerationRotationAllowed, retireAxlClientGeneration } from './axl-client';
 import { CREDENTIAL_SCOPE, type CredentialScope } from '../types/credentials';
 
 const PROVIDER_FAILURE_CODE = 'AXL_CREDENTIAL_PROVIDER_INVALID';
@@ -432,17 +432,27 @@ export class CommandCredentialSource implements CredentialSource {
         resolvedAtMs + this.providerConfig.ttlMs + this.providerConfig.maxStaleMs,
         this.scope
       );
-      this.snapshot = snapshot;
       if (changed && previous) {
+        // Preflight before retirement or publication so a busy rotation cannot
+        // advance the source generation or cache watermark.
+        assertAxlClientGenerationRotationAllowed(previous.generation, this.scope);
+        retireAxlClientGeneration(previous.generation, this.scope);
+        this.snapshot = snapshot;
         this.emit('credential_refresh_rotated');
         this.hooks.onRetireGeneration?.(previous.generation, this.scope);
       } else if (!changed) {
+        this.snapshot = snapshot;
         this.emit('credential_refresh_unchanged');
+      } else {
+        this.snapshot = snapshot;
       }
       return snapshot;
     } catch (error) {
       this.emit('credential_refresh_failed');
-      if (error instanceof AxlPolicyError && error.code === PROVIDER_FAILURE_CODE) {
+      if (
+        error instanceof AxlPolicyError &&
+        (error.code === PROVIDER_FAILURE_CODE || error.code === 'AXL_CREDENTIAL_ROTATION_BUSY')
+      ) {
         throw error;
       }
       throw providerFailure();
@@ -564,16 +574,7 @@ export function createCredentialSource(
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
   hooks: CredentialSourceHooks = {}
 ): CredentialSource {
-  const callerHook = hooks.onRetireGeneration;
-  const effectiveHooks = {
-    ...hooks,
-    onRetireGeneration: (oldGeneration: number, scope?: CredentialScope) => {
-      // Retire first so a throwing observer cannot leave old credentials admissible.
-      retireAxlClientGeneration(oldGeneration, scope);
-      callerHook?.(oldGeneration, scope);
-    },
-  };
   return config.credentialProvider
-    ? new CommandCredentialSource(config, effectiveHooks)
-    : new StaticEnvCredentialSource(environment, effectiveHooks);
+    ? new CommandCredentialSource(config, hooks)
+    : new StaticEnvCredentialSource(environment, hooks);
 }

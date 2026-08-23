@@ -22,6 +22,11 @@ export interface AxlRequestLifecycle {
   readonly remainingTimeoutMs?: () => number;
 }
 
+interface AxlRequestExecutionContext {
+  readonly lifecycle?: AxlRequestLifecycle;
+  readonly signal: AbortSignal;
+}
+
 export interface AxlClient {
   executeOperation(
     operation: string,
@@ -145,7 +150,7 @@ function providerScope(credentials: CucmCredentials): CredentialScope {
 function applyExplicitTls(
   service: CiscoAxlInternals,
   tlsMode: TlsMode,
-  getLifecycle: () => AxlRequestLifecycle | undefined
+  getExecutionContext: () => AxlRequestExecutionContext | undefined
 ): void {
   assertTlsMode(tlsMode);
   if (typeof service._getClient !== 'function') return;
@@ -163,7 +168,8 @@ function applyExplicitTls(
       },
       addOptions(options) {
         existingSecurity?.addOptions?.(options);
-        const lifecycle = getLifecycle();
+        const context = getExecutionContext();
+        const lifecycle = context?.lifecycle;
         if (lifecycle) {
           const timeoutMs = lifecycle.remainingTimeoutMs?.() ?? lifecycle.timeoutMs;
           if (timeoutMs <= 0 || lifecycle.signal?.aborted) {
@@ -172,8 +178,8 @@ function applyExplicitTls(
           lifecycle.markDispatched();
           options.timeout = timeoutMs;
           options.timeoutMs = timeoutMs;
-          if (lifecycle.signal) options.signal = lifecycle.signal;
         }
+        if (context) options.signal = context.signal;
         options.rejectUnauthorized = rejectUnauthorized;
         options.strictSSL = rejectUnauthorized;
         options.agentOptions = {
@@ -182,7 +188,7 @@ function applyExplicitTls(
         };
       },
     });
-    installTransportAbort(client, getLifecycle);
+    installTransportAbort(client, getExecutionContext);
     tlsConfiguredClients.add(client);
     return client;
   };
@@ -195,7 +201,7 @@ function applyExplicitTls(
  */
 function installTransportAbort(
   client: SoapClient,
-  getLifecycle: () => AxlRequestLifecycle | undefined
+  getExecutionContext: () => AxlRequestExecutionContext | undefined
 ): void {
   const httpClient = client.httpClient;
   if (
@@ -221,7 +227,7 @@ function installTransportAbort(
     const request = originalCallback
       ? originalRequest(args[0], settleCallback, ...args.slice(2))
       : originalRequest(...args);
-    const signal = getLifecycle()?.signal;
+    const signal = getExecutionContext()?.signal;
     if (!request || !signal) return request;
 
     cleanup = () => signal.removeEventListener('abort', abort);
@@ -380,6 +386,43 @@ function markRetiringEntries(scope: CredentialScope): void {
   }
 }
 
+function hasActiveEarlierDrainingGeneration(
+  retiringGeneration: number,
+  scope: CredentialScope
+): boolean {
+  for (const entry of clientCache.values()) {
+    if (
+      entry.credentialScope === scope &&
+      entry.retiring &&
+      entry.credentialGeneration !== undefined &&
+      entry.credentialGeneration < retiringGeneration &&
+      (entry.leaseCount > 0 || entry.activeRequests > 0 || entry.queuedRequests > 0)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Fails closed when a second earlier generation is still draining in this scope. */
+export function assertAxlClientGenerationRotationAllowed(
+  retiringGeneration: number,
+  scope: CredentialScope = defaultProviderScope
+): void {
+  if (!Number.isSafeInteger(retiringGeneration) || retiringGeneration < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  if (hasActiveEarlierDrainingGeneration(retiringGeneration, scope)) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_ROTATION_BUSY',
+      'Credential rotation is busy while a previous generation drains'
+    );
+  }
+}
+
 /** Prevents new leases for this and every earlier provider generation. */
 export function retireAxlClientGeneration(
   generation: number,
@@ -391,6 +434,7 @@ export function retireAxlClientGeneration(
       'Credential generation is invalid'
     );
   }
+  assertAxlClientGenerationRotationAllowed(generation, scope);
   minimumProviderGenerationByScope.set(
     scope,
     Math.max(minimumProviderGenerationByScope.get(scope) ?? 0, generation + 1)
@@ -419,11 +463,13 @@ export function getAxlClientCacheDiagnostics(): {
   return { cachedClients: clientCache.size, activeRequests, queuedRequests };
 }
 
-function composeLifecycleSignal(
+function composeExecutionContext(
   lifecycle: AxlRequestLifecycle | undefined,
   cacheSignal: AbortSignal
-): { lifecycle: AxlRequestLifecycle | undefined; dispose: () => void } {
-  if (!lifecycle) return { lifecycle, dispose: () => {} };
+): { context: AxlRequestExecutionContext; dispose: () => void } {
+  if (!lifecycle) {
+    return { context: { signal: cacheSignal }, dispose: () => {} };
+  }
   const controller = new AbortController();
   const signals = [lifecycle.signal, cacheSignal].filter(
     (signal): signal is AbortSignal => signal !== undefined
@@ -437,7 +483,10 @@ function composeLifecycleSignal(
     signal.addEventListener('abort', abort, { once: true });
   }
   return {
-    lifecycle: { ...lifecycle, signal: controller.signal },
+    context: {
+      lifecycle: { ...lifecycle, signal: controller.signal },
+      signal: controller.signal,
+    },
     dispose: () => {
       for (const signal of signals) signal.removeEventListener('abort', abort);
     },
@@ -494,7 +543,7 @@ export function getAxlClient(
     logging: { level: 'error', handler: () => {} },
     retry: { retries: 0 },
   }) as unknown as CiscoAxlInternals;
-  let activeLifecycle: AxlRequestLifecycle | undefined;
+  let activeExecutionContext: AxlRequestExecutionContext | undefined;
   const pendingRequests: PendingAxlRequest[] = [];
   let pump: () => void = () => {};
   const entry: CachedAxlClient = {
@@ -508,7 +557,7 @@ export function getAxlClient(
     queuedRequests: 0,
     shutdownController: new AbortController(),
   };
-  applyExplicitTls(service, tlsMode, () => activeLifecycle);
+  applyExplicitTls(service, tlsMode, () => activeExecutionContext);
 
   const cancelError = () => new Error('AXL request canceled before client dispatch');
   const cancelPending = (pending: PendingAxlRequest) => {
@@ -544,11 +593,11 @@ export function getAxlClient(
     }
 
     entry.activeRequests++;
-    const effectiveLifecycle = composeLifecycleSignal(
+    const effectiveContext = composeExecutionContext(
       pending.lifecycle,
       entry.shutdownController.signal
     );
-    activeLifecycle = effectiveLifecycle.lifecycle;
+    activeExecutionContext = effectiveContext.context;
     let operation: Promise<unknown>;
     try {
       operation = service.executeOperation(pending.operation, pending.tags, pending.opts);
@@ -567,8 +616,8 @@ export function getAxlClient(
         }
       )
       .finally(() => {
-        activeLifecycle = undefined;
-        effectiveLifecycle.dispose();
+        activeExecutionContext = undefined;
+        effectiveContext.dispose();
         entry.activeRequests--;
         pump();
         drainRetiringEntry(key, entry);

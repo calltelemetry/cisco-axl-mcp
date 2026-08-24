@@ -225,6 +225,57 @@ npx @calltelemetry/cisco-axl-mcp
 
 MCP tools use these process credentials by default. They are injected by the MCP host configuration and are not exposed in normal tool schemas or model transcripts. `cucm_version` remains an optional non-secret target-version selector.
 
+### Credential provider mode
+
+For long-running MCP processes, provider mode can refresh only the username and password while
+keeping one process bound to one fixed target. Set `CUCM_HOST` and `CUCM_VERSION` at startup; the
+target host, schema version, TLS mode, allowlists, retry policy, and other service policy are
+immutable for the life of the process. Provider mode is therefore single-target, not a
+multi-cluster credential router. It rejects `CUCM_USERNAME` and `CUCM_PASSWORD` as well as inline
+credential compatibility mode; choose static credentials or a provider, never both.
+
+The provider setting is a JSON argv array. Its first element must be an absolute executable path;
+remaining elements are passed as separate arguments with shell execution disabled. Do not put
+secrets in the array or in process arguments. This vendor-neutral example uses only a non-secret
+asset label:
+
+```bash
+CUCM_HOST=cucm.example.test
+CUCM_VERSION=11.5
+AXL_MCP_CREDENTIAL_PROVIDER='["/absolute/path/to/provider","--asset-id","lab-cucm"]'
+AXL_MCP_CREDENTIAL_TTL_S=300
+AXL_MCP_CREDENTIAL_MAX_STALE_S=0
+AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS=10000
+AXL_MCP_CREDENTIAL_REFRESH_ON_SIGHUP=false
+```
+
+Each provider invocation must write exactly one JSON object to stdout with exactly these two keys
+and no others: `{"username":"<username>","password":"<password>"}`. Credential values are
+consumed in memory and are never emitted in MCP responses, diagnostics, audit records, or failure
+messages. Provider stderr is not part of the credential protocol.
+
+| Environment Variable | Default | Contract |
+| -------------------- | ------- | -------- |
+| `AXL_MCP_CREDENTIAL_PROVIDER` | unset | JSON argv array with an absolute executable path; enables provider mode. |
+| `AXL_MCP_CREDENTIAL_TTL_S` | `300` | Primary refresh interval in seconds (`30`–`86400`). |
+| `AXL_MCP_CREDENTIAL_MAX_STALE_S` | `0` | Maximum bounded stale window after TTL (`0`–`259200`). Outside it, admission fails closed. |
+| `AXL_MCP_CREDENTIAL_PROVIDER_TIMEOUT_MS` | `10000` | Provider process timeout in milliseconds (`100`–`60000`). |
+| `AXL_MCP_CREDENTIAL_REFRESH_ON_SIGHUP` | platform default | Optional early refresh on `SIGHUP`; TTL remains the primary refresh mechanism. |
+
+When a TTL refresh succeeds with a changed password, new requests use the new credential
+generation while already-admitted work keeps its old lease until it drains. A provider timeout,
+non-zero exit, malformed output, or expired stale window never falls back to an unbounded or
+partially parsed credential. A failed refresh may use the previous snapshot only inside the
+configured bounded stale window; after that, requests fail closed with the value-free
+`AXL_CREDENTIALS_UNAVAILABLE` error. Provider setup/output failures use the value-free
+`AXL_CREDENTIAL_PROVIDER_INVALID` error.
+
+This release does not infer authentication failures from arbitrary AXL response text and does not
+retry authentication by rotating credentials. When transport evidence is insufficient to prove a
+stable numeric authentication-status shape, credential refresh is available only through the TTL
+and optional `SIGHUP` controls above. There is no credential-management MCP tool; the existing
+eight-tool surface is unchanged.
+
 #### Deprecated inline credential compatibility
 
 Per-request `cucm_host`, `cucm_username`, and `cucm_password` fields are disabled by default. Supplying any of them returns `AXL_INLINE_CREDENTIALS_DISABLED` before an AXL transport is created. This keeps credentials out of model-visible tool schemas, responses, errors, retry diagnostics, and audit records.

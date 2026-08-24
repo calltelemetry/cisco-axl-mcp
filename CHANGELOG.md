@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.7.0...v0.8.0) (2026-08-24)
+
+
+### Features
+
+* add bounded CUCM AXL credential rotation ([#181](https://github.com/calltelemetry/cisco-axl-mcp/issues/181)) ([b5b7226](https://github.com/calltelemetry/cisco-axl-mcp/commit/b5b722636c4170e9341c85c4b37197a0c71f1b76))
+
 ## [0.7.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.6.0...v0.7.0) (2026-08-22)
 
 

@@ -3,7 +3,7 @@ import { AxlPolicyError } from '../types/axl/errors';
 import { isSupportedCucmVersion } from './version-manager';
 import { loadAxlVersionArtifacts } from '../types/generated/axl-version-loader';
 import { assertTlsMode, type ExecuteOperationOptions, type TlsMode } from './axl-client';
-import type { CucmCredentials } from '../types/credentials';
+import { CREDENTIAL_SCOPE, type CucmCredentials } from '../types/credentials';
 import { isMutationOperation } from './operation-classification-core';
 
 export {
@@ -550,7 +550,17 @@ export function normalizeMutationRequest(
     opts = Object.freeze(normalizedOptions) as ExecuteOperationOptions;
   }
 
-  const credentials = Object.freeze({ ...request.credentials });
+  const credentials = { ...request.credentials };
+  const credentialScope = request.credentials[CREDENTIAL_SCOPE];
+  if (credentialScope !== undefined) {
+    Object.defineProperty(credentials, CREDENTIAL_SCOPE, {
+      value: credentialScope,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+  Object.freeze(credentials);
   return Object.freeze({
     credentials,
     tlsMode: request.tlsMode,

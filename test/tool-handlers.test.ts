@@ -294,6 +294,39 @@ describe('provider-mode MCP admission', () => {
       )
     ).rejects.toMatchObject({ data: { policyCode: 'AXL_TARGET_VERSION_DRIFT' } });
   });
+
+  it.each([
+    ['text-only auth', new Error('401 Unauthorized')],
+    ['generic JSON-RPC auth-shaped error', { code: -32602, message: 'authentication failed' }],
+    ['nested unproven status', { cause: { response: { statusCode: 403 } } }],
+  ])('does not trigger an auth-failure refresh for %s', async (_label, error) => {
+    const refresh = vi.fn(async () => snapshot());
+    const source: CredentialSource = {
+      initialize: async () => snapshot(),
+      current: () => snapshot(),
+      refresh,
+      shutdown: async () => undefined,
+    };
+    const runner: AxlRunner = {
+      runAxl: vi.fn(async () => {
+        throw error;
+      }),
+    };
+
+    await expect(
+      handleTool(
+        'axl_execute',
+        { cucm_version: '11.5', operation: 'getPhone', data: { name: 'SEP001122334455' } },
+        runner,
+        providerConfig(),
+        undefined,
+        runtime(source)
+      )
+    ).rejects.toBeTruthy();
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(runner.runAxl).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('axl_list_objects', () => {

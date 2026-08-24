@@ -15,7 +15,7 @@ const MAX_CREDENTIAL_LENGTH = 512;
 const CHILD_CLEANUP_GRACE_MS = 100;
 const PROCESS_HMAC_KEY = randomBytes(32);
 
-export type CredentialRefreshTrigger = 'startup' | 'ttl' | 'sighup' | 'auth-failure';
+export type CredentialRefreshTrigger = 'startup' | 'ttl' | 'sighup';
 
 export interface CredentialMaterial {
   readonly username: string;

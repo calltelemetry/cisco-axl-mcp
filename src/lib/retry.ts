@@ -5,6 +5,17 @@ export interface RetryOptions {
   jitterFactor: number;
 }
 
+/**
+ * Return a CUCM authentication status only when its transport field is proven
+ * by the live acceptance evidence. The CUCM 11.5 evidence for this release
+ * contained no stable numeric field, so the evidence-negative branch fails
+ * closed for every error shape. Keep this boundary explicit so a future
+ * evidence-positive change can add one exact path without message heuristics.
+ */
+export function extractNumericHttpStatus(_error: unknown): number | undefined {
+  return undefined;
+}
+
 const NETWORK_ERROR_CODES = new Set([
   'ECONNABORTED',
   'ECONNREFUSED',
@@ -142,13 +153,6 @@ export function isRetryable(error: unknown): boolean {
     lower.includes('service unavailable')
   )
     return true;
-
-  // Not retryable: auth errors, validation errors, and ordinary SOAP business faults.
-  if (signals.statuses.includes(401) || lower.includes('401') || lower.includes('unauthorized'))
-    return false;
-  if (signals.statuses.includes(403) || lower.includes('403') || lower.includes('forbidden'))
-    return false;
-  if (lower.includes('authentication failed')) return false;
 
   // Connection errors
   if (signals.codes.some(code => NETWORK_ERROR_CODES.has(code))) return true;

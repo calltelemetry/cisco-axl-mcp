@@ -2,7 +2,6 @@
 import { isDirectExecution } from '../lib/entrypoint';
 import { loadMcpConfig, type ResolvedMcpConfig } from '../lib/tool-config';
 import { writeMetadata } from './metadata';
-import { createCredentialSource } from '../lib/credential-source';
 import type { AxlToolRuntime } from '../lib/credential-resolver';
 
 const MCP_HELP = `Cisco AXL MCP server
@@ -42,7 +41,10 @@ async function startAfterMetadata(): Promise<void> {
     const startupEnvironment = Object.freeze({ ...process.env });
     const runtime = config.credentialProvider
       ? Object.freeze({
-          credentialSource: createCredentialSource(config, startupEnvironment),
+          credentialSource: (await import('../lib/credential-source')).createCredentialSource(
+            config,
+            startupEnvironment
+          ),
           startupEnvironment,
           now: () => Date.now(),
         })

@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,14 +9,26 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const executableName = (name: string): string =>
   process.platform === 'win32' ? `${name}.cmd` : name;
-const npmCliPath = join(
-  dirname(dirname(process.execPath)),
-  'lib',
-  'node_modules',
-  'npm',
-  'bin',
-  'npm-cli.js'
-);
+
+function resolveNpmCliPath(nodePath: string): string {
+  let prefix = dirname(nodePath);
+  for (;;) {
+    const candidates = [
+      join(prefix, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+      join(prefix, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    ];
+    const npmCliPath = candidates.find(candidate => existsSync(candidate));
+    if (npmCliPath) return npmCliPath;
+
+    const parent = dirname(prefix);
+    if (parent === prefix) break;
+    prefix = parent;
+  }
+
+  throw new Error(`Unable to locate npm CLI for Node executable ${nodePath}`);
+}
+
+const npmCliPath = resolveNpmCliPath(process.execPath);
 
 interface PackageMetadata {
   name: string;
@@ -83,6 +96,25 @@ function expectCommandSuccess(result: SpawnSyncReturns<string>): void {
   expect(result.error).toBeUndefined();
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 }
+
+describe('npm CLI resolution', () => {
+  it('finds npm under an installation prefix above the Node executable', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'cisco-axl-npm-cli-'));
+    const nodePath = join(fixtureRoot, 'Cellar', 'node', '26.7.0', 'bin', 'node');
+    const expectedCli = join(fixtureRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    try {
+      await mkdir(dirname(expectedCli), { recursive: true });
+      await writeFile(expectedCli, '');
+      expect(resolveNpmCliPath(nodePath)).toBe(expectedCli);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the npm CLI shipped with the current Node installation', () => {
+    expect(existsSync(npmCliPath)).toBe(true);
+  });
+});
 
 async function importBuiltBootstrap(entryPath: string): Promise<SpawnSyncReturns<string>> {
   const source = [

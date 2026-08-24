@@ -1,11 +1,12 @@
 import type { CucmCredentials } from '../../types/credentials';
 import type {
   AxlClientCacheOptions,
+  AxlClientLease,
   AxlRequestLifecycle,
   ExecuteOperationOptions,
   TlsMode,
 } from '../../lib/axl-client';
-import { getAxlClient } from '../../lib/axl-client';
+import { acquireAxlClientLease } from '../../lib/axl-client';
 import { emitAxlDiagnostic } from '../../lib/runtime-diagnostics';
 import { isRetryable, isThrottleError } from '../../lib/retry';
 import { isMutationOperationForVersion } from '../../lib/operation-classification-core';
@@ -20,11 +21,28 @@ import {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CLIENT_CACHE_MAX_ENTRIES = 16;
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_BASE_DELAY_MS = 1_000;
+const DEFAULT_MAX_AUTOPAGINATE = 10_000;
 
 export interface AxlServiceOptions {
   readonly tlsMode: TlsMode;
   readonly requestTimeoutMs: number;
   readonly clientCacheMaxEntries: number;
+  /** Optional policy overrides; omitted values are resolved once at construction. */
+  readonly maxRetries?: number;
+  readonly retryBaseDelayMs?: number;
+  readonly maxAutoPaginate?: number;
+  readonly clock?: MonotonicClock;
+}
+
+interface ResolvedAxlServiceOptions {
+  readonly tlsMode: TlsMode;
+  readonly requestTimeoutMs: number;
+  readonly clientCacheMaxEntries: number;
+  readonly maxRetries: number;
+  readonly retryBaseDelayMs: number;
+  readonly maxAutoPaginate: number;
   readonly clock?: MonotonicClock;
 }
 
@@ -39,11 +57,33 @@ interface ExecutionDeadline {
 
 const monotonicClock: MonotonicClock = { now: () => performance.now() };
 
-function defaultServiceOptions(tlsMode: TlsMode = 'secure'): AxlServiceOptions {
+function parseEnvironmentInteger(
+  environment: Readonly<NodeJS.ProcessEnv>,
+  name: string,
+  fallback: number
+): number {
+  return parseInt(environment[name] ?? String(fallback), 10) || fallback;
+}
+
+function defaultServiceOptions(
+  tlsMode: TlsMode = 'secure',
+  environment: Readonly<NodeJS.ProcessEnv> = process.env
+): ResolvedAxlServiceOptions {
   return {
     tlsMode,
     requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
     clientCacheMaxEntries: DEFAULT_CLIENT_CACHE_MAX_ENTRIES,
+    maxRetries: parseEnvironmentInteger(environment, 'AXL_MCP_MAX_RETRIES', DEFAULT_MAX_RETRIES),
+    retryBaseDelayMs: parseEnvironmentInteger(
+      environment,
+      'AXL_MCP_RETRY_BASE_DELAY_MS',
+      DEFAULT_RETRY_BASE_DELAY_MS
+    ),
+    maxAutoPaginate: parseEnvironmentInteger(
+      environment,
+      'AXL_MCP_MAX_AUTOPAGINATE',
+      DEFAULT_MAX_AUTOPAGINATE
+    ),
   };
 }
 
@@ -51,15 +91,28 @@ function resolveServiceOptions(
   options:
     | TlsMode
     | AxlServiceOptions
-    | Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'> = 'secure'
-): AxlServiceOptions {
-  if (typeof options === 'string') return defaultServiceOptions(options);
+    | Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'> = 'secure',
+  environment: Readonly<NodeJS.ProcessEnv> = process.env
+): ResolvedAxlServiceOptions {
+  if (typeof options === 'string') return defaultServiceOptions(options, environment);
+  const defaults = defaultServiceOptions(options.tlsMode, environment);
   return {
     tlsMode: options.tlsMode,
     requestTimeoutMs: options.requestTimeoutMs,
     clientCacheMaxEntries: options.clientCacheMaxEntries,
+    maxRetries: (options as AxlServiceOptions).maxRetries ?? defaults.maxRetries,
+    retryBaseDelayMs: (options as AxlServiceOptions).retryBaseDelayMs ?? defaults.retryBaseDelayMs,
+    maxAutoPaginate: (options as AxlServiceOptions).maxAutoPaginate ?? defaults.maxAutoPaginate,
     clock: (options as AxlServiceOptions).clock,
   };
+}
+
+/** Resolve service policy from an immutable startup environment snapshot. */
+export function resolveAxlServiceOptions(
+  options: Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'>,
+  environment: Readonly<NodeJS.ProcessEnv>
+): AxlServiceOptions {
+  return Object.freeze(resolveServiceOptions(options, environment));
 }
 
 function requestTimeoutError(dispatched: boolean): AxlPolicyError {
@@ -174,17 +227,12 @@ function executeWithinDeadline<T>(
   });
 }
 
-function retryOptionsFromEnvironment(): { maxRetries: number; baseDelayMs: number } {
-  return {
-    maxRetries: parseInt(process.env.AXL_MCP_MAX_RETRIES ?? '3', 10) || 3,
-    baseDelayMs: parseInt(process.env.AXL_MCP_RETRY_BASE_DELAY_MS ?? '1000', 10) || 1000,
-  };
-}
-
 export interface AxlServiceExecutionPolicy {
   readonly mutationRetryMode: 'strict';
   /** Request-local cancellation propagated from the MCP server shutdown path. */
   readonly shutdownSignal?: AbortSignal;
+  /** Internal outer lease passed through delegating auto-pagination overrides. */
+  readonly clientLease?: AxlClientLease;
 }
 
 export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.freeze({
@@ -192,7 +240,7 @@ export const STRICT_AXL_EXECUTION_POLICY: AxlServiceExecutionPolicy = Object.fre
 });
 
 export class AxlAPIService {
-  private readonly options: AxlServiceOptions;
+  private readonly options: ResolvedAxlServiceOptions;
   private readonly clock: MonotonicClock;
 
   constructor(
@@ -201,7 +249,7 @@ export class AxlAPIService {
       | AxlServiceOptions
       | Pick<ResolvedMcpConfig, 'tlsMode' | 'requestTimeoutMs' | 'clientCacheMaxEntries'> = 'secure'
   ) {
-    this.options = resolveServiceOptions(options);
+    this.options = Object.freeze(resolveServiceOptions(options));
     this.clock = this.options.clock ?? monotonicClock;
   }
 
@@ -223,7 +271,8 @@ export class AxlAPIService {
       tlsMode,
       executionPolicy,
       { expiresAt: this.clock.now() + this.options.requestTimeoutMs, dispatched: false },
-      effectiveShutdownSignal
+      effectiveShutdownSignal,
+      executionPolicy?.clientLease
     );
   }
 
@@ -235,7 +284,8 @@ export class AxlAPIService {
     tlsMode: TlsMode,
     executionPolicy: AxlServiceExecutionPolicy | undefined,
     deadline: ExecutionDeadline,
-    shutdownSignal?: AbortSignal
+    shutdownSignal?: AbortSignal,
+    admittedLease?: AxlClientLease
   ): Promise<unknown> {
     const startTime = Date.now();
     const mutationOperation = isMutationOperationForVersion(operation, credentials.version);
@@ -247,22 +297,23 @@ export class AxlAPIService {
       onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
     };
 
-    const dispatch = (lifecycle: AxlRequestLifecycle) =>
-      getAxlClient(credentials, tlsMode, cacheOptions).executeOperation(
-        operation,
-        tags,
-        opts,
-        lifecycle
-      );
-
+    let lease = admittedLease;
+    let ownsLease = false;
     try {
+      if (!lease) {
+        lease = acquireAxlClientLease(credentials, tlsMode, cacheOptions);
+        ownsLease = true;
+      }
+      const activeLease = lease;
+      const dispatch = (lifecycle: AxlRequestLifecycle) =>
+        activeLease.client.executeOperation(operation, tags, opts, lifecycle);
+
       // Apply adaptive delay based on recent throttle history within the same deadline.
       const adaptiveDelay = getAdaptiveDelay(credentials.host);
       if (adaptiveDelay > 0) {
         await delayWithinDeadline(adaptiveDelay, deadline, this.clock, shutdownSignal);
       }
-      const retryOptions = retryOptionsFromEnvironment();
-      const maxRetries = strictMutation ? 0 : retryOptions.maxRetries;
+      const maxRetries = strictMutation ? 0 : this.options.maxRetries;
       let result: unknown;
       for (let attempt = 0; ; attempt++) {
         try {
@@ -282,7 +333,7 @@ export class AxlAPIService {
             request: tags,
             sensitiveValues: [credentials.password, credentials.username, credentials.host],
           });
-          const retryDelay = Math.min(retryOptions.baseDelayMs * Math.pow(2, attempt), 30_000);
+          const retryDelay = Math.min(this.options.retryBaseDelayMs * Math.pow(2, attempt), 30_000);
           await delayWithinDeadline(retryDelay, deadline, this.clock, shutdownSignal);
         }
       }
@@ -346,6 +397,8 @@ export class AxlAPIService {
         credentials.username,
         credentials.host,
       ]);
+    } finally {
+      if (ownsLease) lease?.release();
     }
   }
 
@@ -363,22 +416,45 @@ export class AxlAPIService {
       expiresAt: this.clock.now() + this.options.requestTimeoutMs,
       dispatched: false,
     };
-    const maxRows = parseInt(process.env.AXL_MCP_MAX_AUTOPAGINATE ?? '10000', 10) || 10000;
+    const maxRows = this.options.maxAutoPaginate;
     const pageSize = 1000;
     const allRows: unknown[] = [];
     let page = 0;
     let truncated = false;
+    const usesCustomExecuteOperation =
+      this.executeOperation !== AxlAPIService.prototype.executeOperation;
+    const lease = acquireAxlClientLease(credentials, tlsMode, {
+      ...(this.options.clientCacheMaxEntries === DEFAULT_CLIENT_CACHE_MAX_ENTRIES
+        ? {}
+        : { maxEntries: this.options.clientCacheMaxEntries }),
+      onDiagnostic: event => emitAxlDiagnostic(`axl_client_cache_${event}`),
+    });
 
-    while (true) {
-      const pageData = {
-        ...data,
-        skip: String(page * pageSize),
-        first: String(pageSize),
-      };
+    try {
+      while (true) {
+        const pageData = {
+          ...data,
+          skip: String(page * pageSize),
+          first: String(pageSize),
+        };
 
-      const result =
-        this.executeOperation === AxlAPIService.prototype.executeOperation
-          ? await this.executeOperationWithinDeadline(
+        const delegatedExecutionPolicy = usesCustomExecuteOperation
+          ? {
+              ...(executionPolicy ?? { mutationRetryMode: 'strict' as const }),
+              clientLease: lease,
+            }
+          : executionPolicy;
+        const result = usesCustomExecuteOperation
+          ? await this.executeOperation(
+              credentials,
+              operation,
+              pageData,
+              opts,
+              tlsMode,
+              delegatedExecutionPolicy,
+              effectiveShutdownSignal
+            )
+          : await this.executeOperationWithinDeadline(
               credentials,
               operation,
               pageData,
@@ -386,38 +462,33 @@ export class AxlAPIService {
               tlsMode,
               executionPolicy,
               deadline,
-              effectiveShutdownSignal
-            )
-          : await this.executeOperation(
-              credentials,
-              operation,
-              pageData,
-              opts,
-              tlsMode,
-              executionPolicy,
-              effectiveShutdownSignal
+              effectiveShutdownSignal,
+              lease
             );
-      const pageRows = extractRows(result);
+        const pageRows = extractRows(result);
 
-      allRows.push(...pageRows);
-      page++;
+        allRows.push(...pageRows);
+        page++;
 
-      // Stop if we got fewer rows than requested (last page)
-      if (pageRows.length < pageSize) break;
+        // Stop if we got fewer rows than requested (last page)
+        if (pageRows.length < pageSize) break;
 
-      // Stop if we hit the safety cap
-      if (allRows.length >= maxRows) {
-        truncated = true;
-        break;
+        // Stop if we hit the safety cap
+        if (allRows.length >= maxRows) {
+          truncated = true;
+          break;
+        }
       }
-    }
 
-    return {
-      rows: allRows.slice(0, maxRows),
-      totalFetched: Math.min(allRows.length, maxRows),
-      pages: page,
-      truncated,
-    };
+      return {
+        rows: allRows.slice(0, maxRows),
+        totalFetched: Math.min(allRows.length, maxRows),
+        pages: page,
+        truncated,
+      };
+    } finally {
+      lease?.release();
+    }
   }
 }
 

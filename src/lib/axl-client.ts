@@ -1,9 +1,10 @@
 import CiscoAxlService from 'cisco-axl';
 import { createHmac, randomBytes } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
-import type { CucmCredentials } from '../types/credentials';
+import { CREDENTIAL_SCOPE, type CredentialScope, type CucmCredentials } from '../types/credentials';
 import { AxlPolicyError } from '../types/axl/errors';
 import { assertTlsMode, type TlsMode } from './tls-mode';
+import { emitAxlDiagnostic } from './runtime-diagnostics';
 export { emitAxlDiagnostic } from './runtime-diagnostics';
 export { assertTlsMode, resolveMcpTlsMode, type McpTlsEnvironment, type TlsMode } from './tls-mode';
 
@@ -21,6 +22,11 @@ export interface AxlRequestLifecycle {
   readonly remainingTimeoutMs?: () => number;
 }
 
+interface AxlRequestExecutionContext {
+  readonly lifecycle?: AxlRequestLifecycle;
+  readonly signal: AbortSignal;
+}
+
 export interface AxlClient {
   executeOperation(
     operation: string,
@@ -29,6 +35,11 @@ export interface AxlClient {
     lifecycle?: AxlRequestLifecycle
   ): Promise<unknown>;
   testAuthentication(): Promise<boolean>;
+}
+
+export interface AxlClientLease {
+  readonly client: AxlClient;
+  release(): void;
 }
 
 interface SoapSecurity {
@@ -65,6 +76,10 @@ export interface AxlClientCacheOptions {
 
 interface CachedAxlClient {
   client: AxlClient;
+  readonly credentialGeneration?: number;
+  readonly credentialScope?: CredentialScope;
+  leaseCount: number;
+  retiring: boolean;
   lastUsedAt: number;
   activeRequests: number;
   queuedRequests: number;
@@ -88,7 +103,11 @@ const DEFAULT_CLIENT_CACHE_MAX_ENTRIES = 16;
 const DEFAULT_CLIENT_CACHE_IDLE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_CLIENT_MAX_QUEUED_REQUESTS = 8;
 const clientCache = new Map<string, CachedAxlClient>();
+const clientEntries = new WeakMap<object, CachedAxlClient>();
 const cacheIdentityKey = randomBytes(32);
+const defaultProviderScope: CredentialScope = Object.freeze({});
+const scopeIdentityKeys = new WeakMap<CredentialScope, Buffer>();
+const minimumProviderGenerationByScope = new WeakMap<CredentialScope, number>();
 const tlsConfiguredClients = new WeakSet<object>();
 const abortConfiguredHttpClients = new WeakSet<object>();
 
@@ -104,14 +123,34 @@ export function createAxlClientCacheIdentity(creds: CucmCredentials, tlsMode: Tl
     creds.version,
     passwordIdentity,
     tlsMode,
+    creds.credentialGeneration ?? null,
+    creds.credentialGeneration === undefined
+      ? null
+      : createHmac('sha256', cacheIdentityKey)
+          .update(scopeIdentityKey(creds[CREDENTIAL_SCOPE] ?? defaultProviderScope))
+          .digest('hex'),
   ]);
   return createHmac('sha256', cacheIdentityKey).update(identityTuple).digest('hex');
+}
+
+function scopeIdentityKey(scope: CredentialScope): Buffer {
+  let identity = scopeIdentityKeys.get(scope);
+  if (!identity) {
+    identity = randomBytes(32);
+    scopeIdentityKeys.set(scope, identity);
+  }
+  return identity;
+}
+
+function providerScope(credentials: CucmCredentials): CredentialScope {
+  const scope = credentials[CREDENTIAL_SCOPE];
+  return scope && typeof scope === 'object' ? scope : defaultProviderScope;
 }
 
 function applyExplicitTls(
   service: CiscoAxlInternals,
   tlsMode: TlsMode,
-  getLifecycle: () => AxlRequestLifecycle | undefined
+  getExecutionContext: () => AxlRequestExecutionContext | undefined
 ): void {
   assertTlsMode(tlsMode);
   if (typeof service._getClient !== 'function') return;
@@ -129,7 +168,8 @@ function applyExplicitTls(
       },
       addOptions(options) {
         existingSecurity?.addOptions?.(options);
-        const lifecycle = getLifecycle();
+        const context = getExecutionContext();
+        const lifecycle = context?.lifecycle;
         if (lifecycle) {
           const timeoutMs = lifecycle.remainingTimeoutMs?.() ?? lifecycle.timeoutMs;
           if (timeoutMs <= 0 || lifecycle.signal?.aborted) {
@@ -138,8 +178,8 @@ function applyExplicitTls(
           lifecycle.markDispatched();
           options.timeout = timeoutMs;
           options.timeoutMs = timeoutMs;
-          if (lifecycle.signal) options.signal = lifecycle.signal;
         }
+        if (context) options.signal = context.signal;
         options.rejectUnauthorized = rejectUnauthorized;
         options.strictSSL = rejectUnauthorized;
         options.agentOptions = {
@@ -148,7 +188,7 @@ function applyExplicitTls(
         };
       },
     });
-    installTransportAbort(client, getLifecycle);
+    installTransportAbort(client, getExecutionContext);
     tlsConfiguredClients.add(client);
     return client;
   };
@@ -161,7 +201,7 @@ function applyExplicitTls(
  */
 function installTransportAbort(
   client: SoapClient,
-  getLifecycle: () => AxlRequestLifecycle | undefined
+  getExecutionContext: () => AxlRequestExecutionContext | undefined
 ): void {
   const httpClient = client.httpClient;
   if (
@@ -187,7 +227,7 @@ function installTransportAbort(
     const request = originalCallback
       ? originalRequest(args[0], settleCallback, ...args.slice(2))
       : originalRequest(...args);
-    const signal = getLifecycle()?.signal;
+    const signal = getExecutionContext()?.signal;
     if (!request || !signal) return request;
 
     cleanup = () => signal.removeEventListener('abort', abort);
@@ -285,6 +325,7 @@ function evictIdleClients(
 ): void {
   for (const [key, entry] of clientCache) {
     if (
+      entry.leaseCount === 0 &&
       entry.activeRequests === 0 &&
       entry.queuedRequests === 0 &&
       now - entry.lastUsedAt > idleTtlMs
@@ -293,6 +334,112 @@ function evictIdleClients(
       onDiagnostic('eviction');
     }
   }
+}
+
+function assertProviderGenerationAdmitted(
+  generation: number | undefined,
+  scope: CredentialScope = defaultProviderScope
+): void {
+  if (generation === undefined) return;
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  if (generation < (minimumProviderGenerationByScope.get(scope) ?? 0)) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_RETIRED',
+      'Credential generation is retired'
+    );
+  }
+}
+
+function drainRetiringEntry(key: string, entry: CachedAxlClient): void {
+  if (
+    !entry.retiring ||
+    entry.leaseCount !== 0 ||
+    entry.activeRequests !== 0 ||
+    entry.queuedRequests !== 0 ||
+    clientCache.get(key) !== entry
+  ) {
+    return;
+  }
+  clientCache.delete(key);
+  emitAxlDiagnostic('credential_generation_drained');
+}
+
+function markRetiringEntries(scope: CredentialScope): void {
+  const minimumGeneration = minimumProviderGenerationByScope.get(scope) ?? 0;
+  for (const [key, entry] of clientCache) {
+    if (
+      entry.credentialScope === scope &&
+      entry.credentialGeneration !== undefined &&
+      entry.credentialGeneration < minimumGeneration
+    ) {
+      if (!entry.retiring) {
+        entry.retiring = true;
+        emitAxlDiagnostic('credential_generation_draining');
+      }
+      drainRetiringEntry(key, entry);
+    }
+  }
+}
+
+function hasActiveEarlierDrainingGeneration(
+  retiringGeneration: number,
+  scope: CredentialScope
+): boolean {
+  for (const entry of clientCache.values()) {
+    if (
+      entry.credentialScope === scope &&
+      entry.retiring &&
+      entry.credentialGeneration !== undefined &&
+      entry.credentialGeneration < retiringGeneration &&
+      (entry.leaseCount > 0 || entry.activeRequests > 0 || entry.queuedRequests > 0)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Fails closed when a second earlier generation is still draining in this scope. */
+export function assertAxlClientGenerationRotationAllowed(
+  retiringGeneration: number,
+  scope: CredentialScope = defaultProviderScope
+): void {
+  if (!Number.isSafeInteger(retiringGeneration) || retiringGeneration < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  if (hasActiveEarlierDrainingGeneration(retiringGeneration, scope)) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_ROTATION_BUSY',
+      'Credential rotation is busy while a previous generation drains'
+    );
+  }
+}
+
+/** Prevents new leases for this and every earlier provider generation. */
+export function retireAxlClientGeneration(
+  generation: number,
+  scope: CredentialScope = defaultProviderScope
+): void {
+  if (!Number.isSafeInteger(generation) || generation < 1) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_INVALID',
+      'Credential generation is invalid'
+    );
+  }
+  assertAxlClientGenerationRotationAllowed(generation, scope);
+  minimumProviderGenerationByScope.set(
+    scope,
+    Math.max(minimumProviderGenerationByScope.get(scope) ?? 0, generation + 1)
+  );
+  markRetiringEntries(scope);
 }
 
 /** Clears opaque cached clients during controlled shutdown or test isolation. */
@@ -316,11 +463,13 @@ export function getAxlClientCacheDiagnostics(): {
   return { cachedClients: clientCache.size, activeRequests, queuedRequests };
 }
 
-function composeLifecycleSignal(
+function composeExecutionContext(
   lifecycle: AxlRequestLifecycle | undefined,
   cacheSignal: AbortSignal
-): { lifecycle: AxlRequestLifecycle | undefined; dispose: () => void } {
-  if (!lifecycle) return { lifecycle, dispose: () => {} };
+): { context: AxlRequestExecutionContext; dispose: () => void } {
+  if (!lifecycle) {
+    return { context: { signal: cacheSignal }, dispose: () => {} };
+  }
   const controller = new AbortController();
   const signals = [lifecycle.signal, cacheSignal].filter(
     (signal): signal is AbortSignal => signal !== undefined
@@ -334,7 +483,10 @@ function composeLifecycleSignal(
     signal.addEventListener('abort', abort, { once: true });
   }
   return {
-    lifecycle: { ...lifecycle, signal: controller.signal },
+    context: {
+      lifecycle: { ...lifecycle, signal: controller.signal },
+      signal: controller.signal,
+    },
     dispose: () => {
       for (const signal of signals) signal.removeEventListener('abort', abort);
     },
@@ -347,12 +499,19 @@ export function getAxlClient(
   cacheOptions?: AxlClientCacheOptions
 ): AxlClient {
   assertTlsMode(tlsMode);
+  assertProviderGenerationAdmitted(creds.credentialGeneration, providerScope(creds));
   const cache = resolveCacheOptions(cacheOptions);
   const now = Date.now();
   evictIdleClients(now, cache.idleTtlMs, cache.onDiagnostic);
   const key = createAxlClientCacheIdentity(creds, tlsMode);
   const cached = clientCache.get(key);
   if (cached) {
+    if (cached.retiring) {
+      throw new AxlPolicyError(
+        'AXL_CREDENTIAL_GENERATION_RETIRED',
+        'Credential generation is retired'
+      );
+    }
     cached.lastUsedAt = now;
     clientCache.delete(key);
     clientCache.set(key, cached);
@@ -363,7 +522,8 @@ export function getAxlClient(
 
   while (clientCache.size >= cache.maxEntries) {
     const oldestKey = [...clientCache.entries()].find(
-      ([, entry]) => entry.activeRequests === 0 && entry.queuedRequests === 0
+      ([, entry]) =>
+        entry.leaseCount === 0 && entry.activeRequests === 0 && entry.queuedRequests === 0
     )?.[0];
     if (oldestKey === undefined) break;
     clientCache.delete(oldestKey);
@@ -383,17 +543,21 @@ export function getAxlClient(
     logging: { level: 'error', handler: () => {} },
     retry: { retries: 0 },
   }) as unknown as CiscoAxlInternals;
-  let activeLifecycle: AxlRequestLifecycle | undefined;
+  let activeExecutionContext: AxlRequestExecutionContext | undefined;
   const pendingRequests: PendingAxlRequest[] = [];
   let pump: () => void = () => {};
   const entry: CachedAxlClient = {
     client: undefined as unknown as AxlClient,
+    credentialGeneration: creds.credentialGeneration,
+    credentialScope: creds.credentialGeneration === undefined ? undefined : providerScope(creds),
+    leaseCount: 0,
+    retiring: false,
     lastUsedAt: now,
     activeRequests: 0,
     queuedRequests: 0,
     shutdownController: new AbortController(),
   };
-  applyExplicitTls(service, tlsMode, () => activeLifecycle);
+  applyExplicitTls(service, tlsMode, () => activeExecutionContext);
 
   const cancelError = () => new Error('AXL request canceled before client dispatch');
   const cancelPending = (pending: PendingAxlRequest) => {
@@ -405,6 +569,7 @@ export function getAxlClient(
     entry.queuedRequests = pendingRequests.length;
     pending.reject(cancelError());
     pump();
+    drainRetiringEntry(key, entry);
   };
 
   pump = () => {
@@ -423,15 +588,16 @@ export function getAxlClient(
       pending.settled = true;
       pending.reject(cancelError());
       pump();
+      drainRetiringEntry(key, entry);
       return;
     }
 
     entry.activeRequests++;
-    const effectiveLifecycle = composeLifecycleSignal(
+    const effectiveContext = composeExecutionContext(
       pending.lifecycle,
       entry.shutdownController.signal
     );
-    activeLifecycle = effectiveLifecycle.lifecycle;
+    activeExecutionContext = effectiveContext.context;
     let operation: Promise<unknown>;
     try {
       operation = service.executeOperation(pending.operation, pending.tags, pending.opts);
@@ -450,10 +616,11 @@ export function getAxlClient(
         }
       )
       .finally(() => {
-        activeLifecycle = undefined;
-        effectiveLifecycle.dispose();
+        activeExecutionContext = undefined;
+        effectiveContext.dispose();
         entry.activeRequests--;
         pump();
+        drainRetiringEntry(key, entry);
       });
   };
 
@@ -500,5 +667,39 @@ export function getAxlClient(
   };
   entry.client = client;
   clientCache.set(key, entry);
+  clientEntries.set(client, entry);
   return client;
+}
+
+/** Acquires one cache lease for the complete lifetime of an admitted service request. */
+export function acquireAxlClientLease(
+  credentials: CucmCredentials,
+  tlsMode: TlsMode = 'secure',
+  cacheOptions?: AxlClientCacheOptions
+): AxlClientLease {
+  const scope = providerScope(credentials);
+  assertProviderGenerationAdmitted(credentials.credentialGeneration, scope);
+  const admissionKey = createAxlClientCacheIdentity(credentials, tlsMode);
+  const client = getAxlClient(credentials, tlsMode, cacheOptions);
+  const entry = clientEntries.get(client);
+  if (!entry) {
+    throw new AxlPolicyError('AXL_CLIENT_CACHE_INVALID', 'AXL client cache entry is unavailable');
+  }
+  if (entry.retiring) {
+    throw new AxlPolicyError(
+      'AXL_CREDENTIAL_GENERATION_RETIRED',
+      'Credential generation is retired'
+    );
+  }
+  entry.leaseCount++;
+  let released = false;
+  return {
+    client,
+    release: () => {
+      if (released) return;
+      released = true;
+      entry.leaseCount = Math.max(0, entry.leaseCount - 1);
+      drainRetiringEntry(admissionKey, entry);
+    },
+  };
 }

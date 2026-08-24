@@ -8,7 +8,7 @@ import {
   McpError,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { AxlAPIService } from './services/axl/index';
+import { AxlAPIService, resolveAxlServiceOptions } from './services/axl/index';
 import { getTools, handleTool } from './tools/index';
 import { AxlPolicyError, toMcpError } from './types/axl/errors';
 import { PACKAGE_VERSION } from './lib/package-version';
@@ -18,6 +18,8 @@ import type { ResolvedMcpConfig } from './lib/tool-config';
 import { flushAuditLog } from './lib/audit-log';
 import { clearAxlClientCache } from './lib/axl-client';
 import { emitAxlDiagnostic } from './lib/runtime-diagnostics';
+import { createCredentialSource, type CredentialSource } from './lib/credential-source';
+import type { AxlToolRuntime } from './lib/credential-resolver';
 
 /**
  * One MCP process is intentionally a bounded admission point. The cap covers
@@ -25,6 +27,47 @@ import { emitAxlDiagnostic } from './lib/runtime-diagnostics';
  * allocate another service/client lifecycle.
  */
 export const MAX_AXL_MCP_IN_FLIGHT_REQUESTS = 64;
+
+function startupEnvironmentSnapshot(environment: NodeJS.ProcessEnv): Readonly<NodeJS.ProcessEnv> {
+  return Object.freeze({ ...environment });
+}
+
+/** Static mode keeps legacy lazy credential checks while sharing the startup env boundary. */
+function staticRuntimeSource(): CredentialSource {
+  return {
+    initialize: async () => {
+      throw new AxlPolicyError(
+        'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+        'Static credentials are resolved at request admission'
+      );
+    },
+    current: () => {
+      throw new AxlPolicyError(
+        'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+        'Static credentials are resolved at request admission'
+      );
+    },
+    refresh: async () => {
+      throw new AxlPolicyError(
+        'AXL_CREDENTIAL_SOURCE_UNAVAILABLE',
+        'Static credentials are resolved at request admission'
+      );
+    },
+    shutdown: async () => undefined,
+  };
+}
+
+function createStartupRuntime(config: ResolvedMcpConfig): AxlToolRuntime {
+  const startupEnvironment = startupEnvironmentSnapshot(process.env);
+  const credentialSource = config.credentialProvider
+    ? createCredentialSource(config, startupEnvironment)
+    : staticRuntimeSource();
+  return Object.freeze({
+    credentialSource,
+    startupEnvironment,
+    now: () => Date.now(),
+  });
+}
 
 /** Combine request and shutdown cancellation without retaining listener references. */
 function composeAbortSignals(signals: readonly (AbortSignal | undefined)[]): {
@@ -54,10 +97,13 @@ function composeAbortSignals(signals: readonly (AbortSignal | undefined)[]): {
 export class CiscoAxlMcpServer {
   private server: Server;
   private readonly runner: AxlRunner;
+  private readonly runtime: AxlToolRuntime;
   private readonly mutationGrantAuthority = new MutationGrantAuthority();
   private readonly mutationGrantReplayStore = new MutationGrantReplayStore();
   private shutdownPromise: Promise<void> | undefined;
   private acceptingRequests = true;
+  private sighupRefreshPromise: Promise<void> | undefined;
+  private readonly credentialSighupHandler: (() => void) | undefined;
   /** Tracks the underlying operation, not just the MCP response wrapper. */
   private readonly inFlight = new Map<Promise<unknown>, AbortController>();
   private readonly signalHandler = () => {
@@ -71,7 +117,11 @@ export class CiscoAxlMcpServer {
     );
   };
 
-  constructor(private readonly config: ResolvedMcpConfig) {
+  constructor(
+    private readonly config: ResolvedMcpConfig,
+    runtime: AxlToolRuntime = createStartupRuntime(config)
+  ) {
+    this.runtime = runtime;
     this.server = new Server(
       {
         name: 'cisco-axl-mcp',
@@ -90,15 +140,42 @@ export class CiscoAxlMcpServer {
       );
     }
     this.runner = createAxlRunner({
-      service: new AxlAPIService(this.config),
+      service: new AxlAPIService(
+        resolveAxlServiceOptions(this.config, this.runtime.startupEnvironment)
+      ),
       grantAuthority: this.mutationGrantAuthority,
       replayStore: this.mutationGrantReplayStore,
     });
     this.setupToolHandlers();
 
     this.server.onerror = error => console.error('[MCP Error]', error);
-    process.on('SIGINT', this.signalHandler);
-    process.on('SIGTERM', this.signalHandler);
+    try {
+      process.on('SIGINT', this.signalHandler);
+      process.on('SIGTERM', this.signalHandler);
+      if (
+        this.config.credentialProvider?.refreshOnSighup === true &&
+        process.platform !== 'win32'
+      ) {
+        this.credentialSighupHandler = () => {
+          if (this.sighupRefreshPromise || !this.acceptingRequests) return;
+          this.sighupRefreshPromise = Promise.resolve()
+            .then(() => this.runtime.credentialSource.refresh('sighup'))
+            .then(() => undefined)
+            .catch(() => {
+              emitAxlDiagnostic('credential_refresh_failed');
+            })
+            .finally(() => {
+              this.sighupRefreshPromise = undefined;
+            });
+        };
+        process.on('SIGHUP', this.credentialSighupHandler);
+      }
+    } catch (error) {
+      process.off('SIGINT', this.signalHandler);
+      process.off('SIGTERM', this.signalHandler);
+      if (this.credentialSighupHandler) process.off('SIGHUP', this.credentialSighupHandler);
+      throw error;
+    }
   }
 
   /** Idempotent, value-free controlled shutdown used by signals and embedding callers. */
@@ -108,6 +185,7 @@ export class CiscoAxlMcpServer {
       this.acceptingRequests = false;
       process.off('SIGINT', this.signalHandler);
       process.off('SIGTERM', this.signalHandler);
+      if (this.credentialSighupHandler) process.off('SIGHUP', this.credentialSighupHandler);
       const failures: unknown[] = [];
       try {
         await this.server.close();
@@ -117,6 +195,11 @@ export class CiscoAxlMcpServer {
       const activeOperations = [...this.inFlight.keys()];
       for (const controller of this.inFlight.values()) controller.abort();
       try {
+        await this.runtime.credentialSource.shutdown();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
         const drained = await this.awaitDrain(activeOperations, 5_000);
         if (!drained) {
           emitAxlDiagnostic('shutdown_drain_abandoned');
@@ -124,14 +207,23 @@ export class CiscoAxlMcpServer {
             new Error('Active AXL operations did not settle before shutdown drain deadline')
           );
         }
-      } finally {
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
         this.mutationGrantReplayStore.clear();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
         clearAxlClientCache();
-        try {
-          await flushAuditLog();
-        } catch (error) {
-          failures.push(error);
-        }
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await flushAuditLog();
+      } catch (error) {
+        failures.push(error);
       }
       if (failures.length > 0) throw new AggregateError(failures, 'Shutdown incomplete');
     })();
@@ -185,7 +277,14 @@ export class CiscoAxlMcpServer {
             const { name, arguments: rawArgs } = request.params;
             const args = rawArgs ?? {};
 
-            const result = await handleTool(name, args, this.runner, this.config, combined.signal);
+            const result = await handleTool(
+              name,
+              args,
+              this.runner,
+              this.config,
+              combined.signal,
+              this.runtime
+            );
             if (result === null)
               throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
             return result as CallToolResult;
@@ -220,7 +319,38 @@ export class CiscoAxlMcpServer {
   }
 }
 
-export async function startMcp(config: ResolvedMcpConfig): Promise<void> {
-  const server = new CiscoAxlMcpServer(config);
-  await server.run();
+export async function startMcp(
+  config: ResolvedMcpConfig,
+  runtime: AxlToolRuntime = createStartupRuntime(config)
+): Promise<void> {
+  let initialized = false;
+  let server: CiscoAxlMcpServer | undefined;
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = (): Promise<void> => {
+    if (!cleanupPromise) {
+      cleanupPromise = (async () => {
+        try {
+          if (server) await server.shutdown();
+          else if (config.credentialProvider || initialized) {
+            await runtime.credentialSource.shutdown();
+          }
+        } catch {
+          emitAxlDiagnostic('shutdown_failed');
+        }
+      })();
+    }
+    return cleanupPromise;
+  };
+
+  try {
+    if (config.credentialProvider) {
+      await runtime.credentialSource.initialize();
+      initialized = true;
+    }
+    server = new CiscoAxlMcpServer(config, runtime);
+    await server.run();
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }

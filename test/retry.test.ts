@@ -1,6 +1,25 @@
 import { describe, it, expect, vi } from 'vitest';
 import CiscoAxlService from 'cisco-axl';
-import { withRetry, isRetryable, isThrottleError } from '../src/lib/retry';
+import {
+  withRetry,
+  isRetryable,
+  isThrottleError,
+  extractNumericHttpStatus,
+} from '../src/lib/retry';
+
+describe('extractNumericHttpStatus', () => {
+  it.each([
+    ['text-only 401', new Error('HTTP 401 Unauthorized')],
+    ['text-only 403', new Error('403 Forbidden')],
+    ['authentication text', new Error('Authentication failed')],
+    ['generic JSON-RPC error', { code: -32602, message: 'Invalid params' }],
+    ['nested response status', { response: { statusCode: 401 } }],
+    ['nested cause status', { cause: { status: 403, message: 'authentication failed' } }],
+    ['top-level status', { status: 401, message: 'request failed' }],
+  ])('returns undefined for unproven %s', (_label, error) => {
+    expect(extractNumericHttpStatus(error)).toBeUndefined();
+  });
+});
 
 describe('isRetryable', () => {
   it('returns true for 429 errors', () => {

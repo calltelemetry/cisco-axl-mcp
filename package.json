@@ -1,6 +1,6 @@
 {
   "name": "@calltelemetry/cisco-axl-mcp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "MCP server for Cisco CUCM AXL (SOAP) via cisco-axl",
   "repository": "https://github.com/calltelemetry/cisco-axl-mcp.git",
   "type": "module",
@@ -20,8 +20,9 @@
   "scripts": {
     "generate:types": "tsx scripts/generate-types.ts",
     "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
-    "build": "vite build && chmod 755 build/index.js build/cli.js",
+    "build": "vite build && chmod 755 build/index.js build/cli.js build/sse.js",
     "start": "node build/index.js",
+    "start:sse": "node build/sse.js",
     "dev": "vite build --watch --mode development",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ test/ scripts/",

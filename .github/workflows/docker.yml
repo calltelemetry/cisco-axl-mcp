@@ -82,6 +82,43 @@ jobs:
             git push origin "${TAG}" || true
           fi
 
+      - name: Mint release-automation token for ct-infrastructure
+        if: github.ref == 'refs/heads/main'
+        id: rel_token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: calltelemetry
+          repositories: ct-infrastructure
+        continue-on-error: true
+
+      - name: Auto-bump deployment in ct-infrastructure
+        if: github.ref == 'refs/heads/main' && steps.rel_token.outputs.token != ''
+        env:
+          INFRA_TOKEN: ${{ steps.rel_token.outputs.token }}
+          TAG: ${{ steps.pkg.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TMP_DIR=$(mktemp -d)
+          git clone --depth=1 "https://x-access-token:${INFRA_TOKEN}@github.com/calltelemetry/ct-infrastructure.git" "${TMP_DIR}"
+          DEPLOY_PATH="${TMP_DIR}/clusters/doks-nyc1/apps/llm-gateway/deploy-cisco-axl-mcp.yaml"
+          if [[ -f "${DEPLOY_PATH}" ]]; then
+            sed -i.bak -E "s|image: ghcr.io/calltelemetry/cisco-axl-mcp:[^ ]*|image: ghcr.io/calltelemetry/cisco-axl-mcp:${TAG}|g" "${DEPLOY_PATH}"
+            rm -f "${DEPLOY_PATH}.bak"
+            cd "${TMP_DIR}"
+            if ! git diff --quiet; then
+              git config user.name "ct-release-automation[bot]"
+              git config user.email "ct-release-automation[bot]@users.noreply.github.com"
+              git commit -am "chore(llm-gateway): auto-bump cisco-axl-mcp to ${TAG} [skip ci]"
+              git push origin main
+              echo "Successfully pushed auto-bump to ct-infrastructure main"
+            else
+              echo "ct-infrastructure already up to date with ${TAG}"
+            fi
+          fi
+          rm -rf "${TMP_DIR}"
+
       - name: Prune builder cache to budget
         if: always()
         run: docker buildx prune --force --keep-storage 5GB

@@ -5,10 +5,16 @@
 # in .github/actions/workflow-edit-guard/ (guard.sh + test.sh).
 #
 # Security model:
-#   - pull_request_target runs THIS file as it exists on the BASE branch, so a
-#     PR cannot weaken the guard that judges it.
-#   - The PR head is NEVER checked out or executed. Only the trusted base copy
-#     of guard.sh runs; PR data comes from the REST API as JSON.
+#   - pull_request_target runs a trusted copy of THIS file (GitHub loads it from
+#     the default branch, not the PR head), so a PR cannot weaken the guard that
+#     judges it.
+#   - The PR head is NEVER checked out or executed. guard.sh/test.sh are checked
+#     out at github.workflow_sha, the SAME commit this workflow file came from
+#     (REL-1120). Do not use pull_request.base.sha: it can be stale (not
+#     refreshed when the base moves) and, for PRs into a stable branch, it names
+#     a different branch than the one the workflow was loaded from. Either way
+#     it may predate the guard scripts and fail a normal PR with exit 127.
+#   - PR data comes from the REST API as JSON.
 #   - Token is read-only (contents/pull-requests: read).
 #   - merge_group runs pass: the PR-level run already gated entry to the queue,
 #     and the job name must report there too so the queue does not stall.
@@ -39,17 +45,25 @@ jobs:
         if: github.event_name == 'merge_group'
         run: echo "workflow-edit-guard evaluated at PR time; merge_group pass-through."
 
-      - name: Checkout trusted base (never the PR head)
+      - name: Checkout trusted guard (workflow's own commit, never the PR head)
         if: github.event_name == 'pull_request_target'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
           sparse-checkout: .github/actions/workflow-edit-guard
 
       - name: Guard self-test (fixtures, negative proof)
         if: github.event_name == 'pull_request_target'
-        run: bash .github/actions/workflow-edit-guard/test.sh
+        run: |
+          set -euo pipefail
+          for f in guard.sh test.sh; do
+            if [[ ! -f ".github/actions/workflow-edit-guard/$f" ]]; then
+              echo "::error title=workflow-edit-guard::$f missing at workflow commit ${{ github.workflow_sha }}; the workflow and its scripts must land together."
+              exit 1
+            fi
+          done
+          bash .github/actions/workflow-edit-guard/test.sh
 
       - name: Fetch PR files and commits
         if: github.event_name == 'pull_request_target'

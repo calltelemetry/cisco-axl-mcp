@@ -10,6 +10,14 @@ updates:
     # Collapse the weekly minor/patch churn into a single rolling PR
     # instead of one PR per package.
     groups:
+      # vitest and @vitest/* peer-pin each other to the exact same version,
+      # so they must always move in one PR. Listed first: Dependabot places
+      # a dependency in the first group that matches. Majors are still
+      # blocked by the ignore rule below; when one is let through, the pair
+      # lands together instead of as split, individually-failing PRs.
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
+        update-types: ["major", "minor", "patch"]
       npm-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]

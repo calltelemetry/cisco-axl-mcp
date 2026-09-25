@@ -1,0 +1,4 @@
+# REL-1119: CI definitions (workflows, composite actions, guard) are owned by the
+# repository owner. Automation PRs touching these paths also fail the
+# workflow-edit-guard required check.
+/.github/ @calltelemetry-jason

@@ -1016,6 +1016,8 @@ Contributions are welcome! To get started:
 
 CI runs automatically on pull requests — typecheck, lint, tests with coverage, and build must all pass before merge. The `main` branch is protected and requires CI to pass.
 
+Pull requests are also reviewed automatically by Review Yeti (the Call Telemetry review GitHub App). Its `Review Yeti` check is advisory and is not a required status check.
+
 ## npm trusted publishing
 
 Releases are created by Release Please from `main`; the release job then checks out the exact

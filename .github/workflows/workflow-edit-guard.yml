@@ -1,0 +1,76 @@
+# workflow-edit-guard (REL-1119) — required status check.
+#
+# Blocks PRs produced by coding automation (Google Jules / "Bolt") from
+# changing .github/workflows/** or .github/actions/**. Logic and fixtures live
+# in .github/actions/workflow-edit-guard/ (guard.sh + test.sh).
+#
+# Security model:
+#   - pull_request_target runs THIS file as it exists on the BASE branch, so a
+#     PR cannot weaken the guard that judges it.
+#   - The PR head is NEVER checked out or executed. Only the trusted base copy
+#     of guard.sh runs; PR data comes from the REST API as JSON.
+#   - Token is read-only (contents/pull-requests: read).
+#   - merge_group runs pass: the PR-level run already gated entry to the queue,
+#     and the job name must report there too so the queue does not stall.
+#
+# The job name MUST stay `workflow-edit-guard`; branch protection keys on it.
+name: workflow-edit-guard
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: workflow-edit-guard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+jobs:
+  workflow-edit-guard:
+    name: workflow-edit-guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Merge queue pass-through
+        if: github.event_name == 'merge_group'
+        run: echo "workflow-edit-guard evaluated at PR time; merge_group pass-through."
+
+      - name: Checkout trusted base (never the PR head)
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/actions/workflow-edit-guard
+
+      - name: Guard self-test (fixtures, negative proof)
+        if: github.event_name == 'pull_request_target'
+        run: bash .github/actions/workflow-edit-guard/test.sh
+
+      - name: Fetch PR files and commits
+        if: github.event_name == 'pull_request_target'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[]' | jq -s . > "$RUNNER_TEMP/files.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[]' | jq -s . > "$RUNNER_TEMP/commits.json"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          echo "files=$(jq length "$RUNNER_TEMP/files.json") commits=$(jq length "$RUNNER_TEMP/commits.json")"
+
+      - name: Enforce
+        if: github.event_name == 'pull_request_target'
+        env:
+          GUARD_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GUARD_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GUARD_BODY_FILE: ${{ runner.temp }}/body.txt
+          GUARD_COMMITS_FILE: ${{ runner.temp }}/commits.json
+          GUARD_FILES_FILE: ${{ runner.temp }}/files.json
+        run: bash .github/actions/workflow-edit-guard/guard.sh

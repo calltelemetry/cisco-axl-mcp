@@ -7,16 +7,14 @@
   "engines": {
     "node": ">=22.14.0"
   },
-  "main": "build/index.js",
-  "types": "build/index.d.ts",
   "bin": {
     "cisco-axl-mcp": "build/index.js",
     "cisco-axl-mcp-cli": "build/cli.js"
   },
   "exports": {
     ".": {
-      "types": "./build/index.d.ts",
-      "default": "./build/index.js"
+      "types": "./build/server.d.ts",
+      "default": "./build/server.js"
     },
     "./server": {
       "types": "./build/server.d.ts",

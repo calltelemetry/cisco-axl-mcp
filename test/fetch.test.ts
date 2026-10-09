@@ -172,4 +172,81 @@ describe('Cisco AXL Universal Fetch / Streamable HTTP Handler', () => {
     const body = (await res.json()) as { error: { code: number } };
     expect(body.error.code).toBe(-32601);
   });
+
+  it('returns -32602 when tool name is missing in tools/call', async () => {
+    const req = new Request('https://mcp.internal/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {},
+      }),
+    });
+
+    const res = await handleMcpFetchRequest(req);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32602);
+  });
+
+  it('returns -32601 when calling unknown tool in tools/call', async () => {
+    const req = new Request('https://mcp.internal/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: { name: 'nonexistent_tool', arguments: {} },
+      }),
+    });
+
+    const res = await handleMcpFetchRequest(req);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: number } };
+    expect(body.error.code).toBe(-32601);
+  });
+
+  it('catches tool execution errors and returns isError response', async () => {
+    const req = new Request('https://mcp.internal/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'axl_list_objects', arguments: { cucm_version: 'invalid-version' } },
+      }),
+    });
+
+    const res = await handleMcpFetchRequest(req);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0]!.text).toContain('Error');
+  });
+
+  it('returns 404 for unknown GET requests', async () => {
+    const req = new Request('https://mcp.internal/not-found', { method: 'GET' });
+    const res = await handleMcpFetchRequest(req);
+    expect(res.status).toBe(404);
+  });
+
+  it('exports fetch handler as default export', async () => {
+    const mod = await import('../src/fetch');
+    expect(typeof mod.default.fetch).toBe('function');
+  });
+
+  it('exports entrypoint symbols from index.ts', async () => {
+    const index = await import('../src/index');
+    expect(typeof index.startMcp).toBe('function');
+    expect(typeof index.handleMcpFetchRequest).toBe('function');
+    expect(typeof index.getTools).toBe('function');
+    expect(typeof index.loadMcpConfig).toBe('function');
+    expect(typeof index.startSseServer).toBe('function');
+  });
 });

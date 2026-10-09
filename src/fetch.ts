@@ -23,16 +23,33 @@ export interface FetchHandlerOptions {
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers':
-    'Content-Type, Authorization, Mcp-Method, Mcp-Name, MCP-Protocol-Version, x-ct-agent',
+    'Content-Type, Accept, Authorization, mcp-session-id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, x-ct-agent',
+  'Access-Control-Expose-Headers': 'mcp-session-id',
 };
 
 function jsonResponse(
   status: number,
   data: unknown,
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
+  request?: Request
 ): Response {
+  const accept = request?.headers.get('accept') || '';
+  if (accept.includes('text/event-stream') && status === 200) {
+    const sseBody = `event: message\ndata: ${JSON.stringify(data)}\n\n`;
+    return new Response(sseBody, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        ...CORS_HEADERS,
+        ...extraHeaders,
+      },
+    });
+  }
+
   return new Response(JSON.stringify(data), {
     status,
     headers: {
@@ -114,15 +131,16 @@ export async function handleMcpFetchRequest(
     const typedParams = (params as Record<string, unknown>) || {};
 
     if (method === 'initialize') {
+      const clientProtocolVersion = (typedParams.protocolVersion as string) || '2026-07-28';
       return jsonResponse(200, {
         jsonrpc: '2.0',
         id,
         result: {
-          protocolVersion: '2026-07-28',
-          capabilities: { tools: {} },
+          protocolVersion: clientProtocolVersion,
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
         },
-      });
+      }, {}, request);
     }
 
     if (method === 'notifications/initialized') {
@@ -130,7 +148,7 @@ export async function handleMcpFetchRequest(
     }
 
     if (method === 'ping') {
-      return jsonResponse(200, { jsonrpc: '2.0', id, result: {} });
+      return jsonResponse(200, { jsonrpc: '2.0', id, result: {} }, {}, request);
     }
 
     if (method === 'tools/list') {
@@ -138,7 +156,7 @@ export async function handleMcpFetchRequest(
         jsonrpc: '2.0',
         id,
         result: { tools: getTools(config) },
-      });
+      }, {}, request);
     }
 
     if (method === 'tools/call') {
@@ -150,7 +168,7 @@ export async function handleMcpFetchRequest(
           jsonrpc: '2.0',
           id,
           error: { code: -32602, message: 'Invalid params: tool name required' },
-        });
+        }, {}, request);
       }
 
       try {
@@ -161,13 +179,13 @@ export async function handleMcpFetchRequest(
             jsonrpc: '2.0',
             id,
             error: { code: -32601, message: `Unknown tool: ${toolName}` },
-          });
+          }, {}, request);
         }
         return jsonResponse(200, {
           jsonrpc: '2.0',
           id,
           result,
-        });
+        }, {}, request);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         return jsonResponse(200, {
@@ -177,7 +195,7 @@ export async function handleMcpFetchRequest(
             content: [{ type: 'text', text: `Error: ${message}` }],
             isError: true,
           },
-        });
+        }, {}, request);
       }
     }
 
@@ -185,7 +203,7 @@ export async function handleMcpFetchRequest(
       jsonrpc: '2.0',
       id,
       error: { code: -32601, message: `Method not found: ${String(method)}` },
-    });
+    }, {}, request);
   }
 
   return jsonResponse(404, { error: 'Not Found' });

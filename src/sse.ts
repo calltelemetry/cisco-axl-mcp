@@ -13,6 +13,7 @@ import { createMcpServer, SERVER_NAME, SERVER_VERSION } from './server';
 import { isDirectExecution } from './lib/entrypoint';
 import { clearAxlClientCache } from './lib/axl-client';
 import { flushAuditLog } from './lib/audit-log';
+import { handleMcpFetchRequest } from './fetch';
 
 const DEFAULT_PORT = parseInt(process.env.PORT || '8011', 10);
 const DEFAULT_HOST = process.env.HOST || '0.0.0.0';
@@ -37,7 +38,10 @@ export async function startSseServer(options: SseServerOptions = {}): Promise<ht
       // CORS headers
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-id');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, x-session-id, Mcp-Method, Mcp-Name, MCP-Protocol-Version, x-ct-agent'
+      );
 
       if (req.method === 'OPTIONS') {
         res.writeHead(204);
@@ -56,6 +60,29 @@ export async function startSseServer(options: SseServerOptions = {}): Promise<ht
             uptime: process.uptime(),
           })
         );
+        return;
+      }
+
+      // Streamable HTTP JSON-RPC endpoint (/mcp, /cisco_axl/mcp)
+      if (url.pathname === '/mcp' || url.pathname === '/cisco_axl/mcp') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        }
+        const bodyBuffer = Buffer.concat(chunks);
+        const headers = new Headers();
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
+        }
+        const webReq = new Request(url.toString(), {
+          method: req.method,
+          headers,
+          body: req.method !== 'GET' && req.method !== 'HEAD' ? bodyBuffer : undefined,
+        });
+        const webRes = await handleMcpFetchRequest(webReq);
+        res.writeHead(webRes.status, Object.fromEntries(webRes.headers.entries()));
+        const resBody = await webRes.arrayBuffer();
+        res.end(Buffer.from(resBody));
         return;
       }
 

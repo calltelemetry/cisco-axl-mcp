@@ -23,9 +23,12 @@ export default defineConfig(({ mode }) => ({
   build: {
     lib: {
       entry: {
-        index: resolve(projectRoot, 'src/bin/mcp.ts'),
+        index: resolve(projectRoot, 'src/index.ts'),
         cli: resolve(projectRoot, 'src/bin/cli.ts'),
         sse: resolve(projectRoot, 'src/sse.ts'),
+        fetch: resolve(projectRoot, 'src/fetch.ts'),
+        server: resolve(projectRoot, 'src/server.ts'),
+        tools: resolve(projectRoot, 'src/tools/index.ts'),
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,

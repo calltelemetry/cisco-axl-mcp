@@ -60,8 +60,11 @@ function staticRuntimeSource(): CredentialSource {
   };
 }
 
-export function createStartupRuntime(config: ResolvedMcpConfig): AxlToolRuntime {
-  const startupEnvironment = startupEnvironmentSnapshot(process.env);
+export function createStartupRuntime(
+  config: ResolvedMcpConfig,
+  env?: NodeJS.ProcessEnv
+): AxlToolRuntime {
+  const startupEnvironment = startupEnvironmentSnapshot(env ?? process.env);
   const credentialSource = config.credentialProvider
     ? createCredentialSource(config, startupEnvironment)
     : staticRuntimeSource();

@@ -7,9 +7,33 @@
   "engines": {
     "node": ">=22.14.0"
   },
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
   "bin": {
     "cisco-axl-mcp": "build/index.js",
     "cisco-axl-mcp-cli": "build/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "default": "./build/index.js"
+    },
+    "./server": {
+      "types": "./build/server.d.ts",
+      "default": "./build/server.js"
+    },
+    "./tools": {
+      "types": "./build/tools/index.d.ts",
+      "default": "./build/tools.js"
+    },
+    "./sse": {
+      "types": "./build/sse.d.ts",
+      "default": "./build/sse.js"
+    },
+    "./fetch": {
+      "types": "./build/fetch.d.ts",
+      "default": "./build/fetch.js"
+    }
   },
   "files": [
     "build/**/*"
@@ -20,7 +44,7 @@
   "scripts": {
     "generate:types": "tsx scripts/generate-types.ts",
     "print:objects": "node -e \"const fs=require('fs'); console.log(fs.readFileSync('generated/axl-top-level-objects.json','utf8'))\"",
-    "build": "vite build && chmod 755 build/index.js build/cli.js build/sse.js",
+    "build": "vite build && tsc -p tsconfig.build.json && chmod 755 build/index.js build/cli.js build/sse.js",
     "start": "node build/index.js",
     "start:sse": "node build/sse.js",
     "dev": "vite build --watch --mode development",
@@ -33,7 +57,7 @@
     "test:mcp": "vitest run test/mcp-conformance.test.ts",
     "package:smoke": "vitest run test/package-build.test.ts",
     "validate": "yarn typecheck && yarn format:check && yarn lint --max-warnings=0 && yarn vitest run --coverage && yarn build && yarn package:smoke",
-    "prepack": "yarn build && yarn test:mcp"
+    "prepack": "npm run build && npm run test:mcp"
   },
   "keywords": [
     "mcp",

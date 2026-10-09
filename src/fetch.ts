@@ -49,9 +49,7 @@ export function createFetchRunner(
 ): { runner: AxlRunner; runtime: AxlToolRuntime } {
   const grantAuthority = new MutationGrantAuthority();
   const replayStore = new MutationGrantReplayStore();
-  const service = new AxlAPIService(
-    resolveAxlServiceOptions(config, env)
-  );
+  const service = new AxlAPIService(resolveAxlServiceOptions(config, env));
   const runner = createAxlRunner({
     service,
     grantAuthority,
@@ -157,14 +155,7 @@ export async function handleMcpFetchRequest(
 
       try {
         const { runner, runtime } = createFetchRunner(config, mergedEnv);
-        const result = await handleTool(
-          toolName,
-          toolArgs,
-          runner,
-          config,
-          undefined,
-          runtime
-        );
+        const result = await handleTool(toolName, toolArgs, runner, config, undefined, runtime);
         if (result === null) {
           return jsonResponse(400, {
             jsonrpc: '2.0',

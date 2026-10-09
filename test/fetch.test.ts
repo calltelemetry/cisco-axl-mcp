@@ -76,7 +76,11 @@ describe('Cisco AXL Universal Fetch / Streamable HTTP Handler', () => {
 
     const res = await handleMcpFetchRequest(req);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { jsonrpc: string; id: string; result: Record<string, unknown> };
+    const body = (await res.json()) as {
+      jsonrpc: string;
+      id: string;
+      result: Record<string, unknown>;
+    };
     expect(body.id).toBe('ping-axl');
     expect(body.result).toEqual({});
   });
@@ -99,7 +103,7 @@ describe('Cisco AXL Universal Fetch / Streamable HTTP Handler', () => {
       id: number;
       result: { tools: Array<{ name: string; description: string }> };
     };
-    const names = body.result.tools.map((t) => t.name);
+    const names = body.result.tools.map(t => t.name);
     expect(names).toContain('axl_list_objects');
     expect(names).toContain('axl_list_operations');
     expect(names).toContain('axl_describe_operation');

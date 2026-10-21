@@ -5,7 +5,7 @@
   "repository": "https://github.com/calltelemetry/cisco-axl-mcp.git",
   "type": "module",
   "engines": {
-    "node": ">=22.14.0"
+    "node": ">=24.0.0"
   },
   "bin": {
     "cisco-axl-mcp": "build/index.js",

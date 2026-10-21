@@ -29,7 +29,7 @@ describe('public npm release contract', () => {
     expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(packageJson.private).not.toBe(true);
     expect(packageJson.repository).toBe('https://github.com/calltelemetry/cisco-axl-mcp.git');
-    expect(packageJson.engines).toEqual({ node: '>=22.14.0' });
+    expect(packageJson.engines).toEqual({ node: '>=24.0.0' });
     expect(packageJson.bin).toEqual({
       'cisco-axl-mcp': 'build/index.js',
       'cisco-axl-mcp-cli': 'build/cli.js',
@@ -61,7 +61,7 @@ describe('public npm release contract', () => {
     });
     const packageJson = JSON.parse(read('package.json')) as { version: string };
     expect(manifest['.']).toBe(packageJson.version);
-    expect(read('.nvmrc').trim()).toBe('22.14.0');
+    expect(read('.nvmrc').trim()).toBe('24');
     expect(read('.releaserc.json')).toBe('');
   });
 
@@ -201,7 +201,7 @@ describe('public npm release contract', () => {
       read('.github/workflows/scheduled-audit.yml'),
     ];
 
-    expect(read('.nvmrc').trim()).toBe('22.14.0');
+    expect(read('.nvmrc').trim()).toBe('24');
     for (const workflow of workflows) {
       expect(workflow).toContain('node-version-file: .nvmrc');
       expect(workflow).not.toMatch(/node-version:\s*['"]?22['"]?/);

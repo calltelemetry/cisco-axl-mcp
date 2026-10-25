@@ -1043,5 +1043,3 @@ This project is made possible by:
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
-
-<!-- merge-queue canary 2026-10-25 -->

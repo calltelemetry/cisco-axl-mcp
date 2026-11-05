@@ -42,11 +42,12 @@ export type ToolHandler = (
 ) => Promise<ToolResult | null>;
 
 export function jsonResponse(data: unknown): ToolResult {
+  const text = JSON.stringify(data, null, 2) ?? 'null';
   return {
     content: [
       {
         type: 'text',
-        text: JSON.stringify(data, null, 2),
+        text,
       },
     ],
   };

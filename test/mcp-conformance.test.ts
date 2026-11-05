@@ -1,4 +1,8 @@
-import { ErrorCode, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolResultSchema,
+  ErrorCode,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import { beforeAll, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,6 +52,143 @@ describe('MCP Protocol Conformance', () => {
   // version-artifact import rather than the MCP behavior under test.
   beforeAll(async () => {
     await loadAxlVersionArtifacts('14.0');
+  });
+
+  describe('AXL list result serialization', () => {
+    const listReads = [
+      {
+        operation: 'listRoutePattern',
+        objectName: 'RoutePattern',
+        data: {
+          searchCriteria: { routePartitionName: 'test-partition' },
+          returnedTags: { pattern: '', description: '' },
+          first: 5,
+          skip: 0,
+        },
+        rows: {
+          routePattern: [{ pattern: '55501', description: 'unit-test route' }],
+        },
+      },
+      {
+        operation: 'listSipTrunk',
+        objectName: 'SipTrunk',
+        data: {
+          searchCriteria: { name: 'UNIT-TEST-TRUNK' },
+          returnedTags: { name: '', description: '' },
+          first: 5,
+          skip: 0,
+        },
+        rows: {
+          sipTrunk: [{ name: 'UNIT-TEST-TRUNK', description: 'unit-test trunk' }],
+        },
+      },
+    ] as const;
+
+    async function callListTool(
+      operation: (typeof listReads)[number]['operation'],
+      objectName: (typeof listReads)[number]['objectName'],
+      data: (typeof listReads)[number]['data'],
+      executeOperation: ReturnType<typeof vi.fn>
+    ) {
+      const runner = createAxlRunner({
+        service: {
+          executeOperation,
+          listAll: vi.fn(),
+        } as unknown as AxlAPIService,
+      });
+      const credentialSource = source([], async () => {
+        throw new Error('provider initialization is not expected during an AXL read');
+      });
+
+      return handleTool(
+        'axl_execute',
+        { cucm_version: '14.0', operation, data },
+        runner,
+        providerConfig({
+          enabledObjects: new Set([objectName]),
+          fixedTarget: { host: 'fixed.example.test', version: '14.0' },
+        }),
+        undefined,
+        runtime(credentialSource)
+      );
+    }
+
+    it.each(listReads)(
+      '$operation returns a valid MCP result when the AXL response is undefined',
+      async ({ operation, objectName, data }) => {
+        const result = await callListTool(
+          operation,
+          objectName,
+          data,
+          vi.fn().mockResolvedValue(undefined)
+        );
+        const parsed = CallToolResultSchema.safeParse(result);
+
+        expect(parsed.success, `${operation} must produce a valid CallToolResult`).toBe(true);
+        if (!parsed.success) return;
+        const firstContent = parsed.data.content[0];
+        expect(firstContent?.type).toBe('text');
+        if (firstContent?.type !== 'text') return;
+        expect(firstContent.text).toBe('null');
+      }
+    );
+
+    it.each(listReads)(
+      '$operation preserves an explicitly empty AXL row array',
+      async ({ operation, objectName, data }) => {
+        const result = await callListTool(
+          operation,
+          objectName,
+          data,
+          vi.fn().mockResolvedValue([])
+        );
+        const parsed = CallToolResultSchema.safeParse(result);
+
+        expect(parsed.success, `${operation} must produce a valid CallToolResult`).toBe(true);
+        if (!parsed.success) return;
+        const firstContent = parsed.data.content[0];
+        expect(firstContent?.type).toBe('text');
+        if (firstContent?.type !== 'text') return;
+        expect(firstContent.text).toBe('[]');
+      }
+    );
+
+    it.each(listReads)(
+      '$operation preserves nonempty AXL rows',
+      async ({ operation, objectName, data, rows }) => {
+        const result = await callListTool(
+          operation,
+          objectName,
+          data,
+          vi.fn().mockResolvedValue(rows)
+        );
+        const parsed = CallToolResultSchema.safeParse(result);
+
+        expect(parsed.success, `${operation} must produce a valid CallToolResult`).toBe(true);
+        if (!parsed.success) return;
+        const firstContent = parsed.data.content[0];
+        expect(firstContent?.type).toBe('text');
+        if (firstContent?.type !== 'text') return;
+        expect(JSON.parse(firstContent.text)).toEqual(rows);
+      }
+    );
+
+    it('propagates AXL SOAP faults instead of converting them to JSON null', async () => {
+      const fault = new Error('SOAP fault from a unit-test AXL response');
+      const error = await callListTool(
+        'listRoutePattern',
+        'RoutePattern',
+        listReads[0].data,
+        vi.fn().mockRejectedValue(fault)
+      ).then(
+        () => null,
+        (reason: unknown) => reason
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as { code?: number }).code).toBe(ErrorCode.InternalError);
+      expect((error as Error).message).toContain(fault.message);
+    });
   });
 
   function providerConfig(overrides: Partial<ResolvedMcpConfig> = {}): ResolvedMcpConfig {

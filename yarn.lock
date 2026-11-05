@@ -3859,8 +3859,8 @@ __metadata:
   linkType: hard
 
 "strong-soap@npm:^6.0.1":
-  version: 6.0.3
-  resolution: "strong-soap@npm:6.0.3"
+  version: 6.0.4
+  resolution: "strong-soap@npm:6.0.4"
   dependencies:
     "@cypress/request": "npm:^3.0.10"
     compress: "npm:^0.99.0"
@@ -3874,7 +3874,7 @@ __metadata:
     uuid: "npm:^11.1.1"
     xml-crypto: "npm:^3.2.1"
     xmlbuilder: "npm:^10.1.1"
-  checksum: 10c0/b538a74330065f422762a1dfb449237671086f4a8c8e6edd634d9c9867a6e04532c8f35d4e9c1777c4576d131669cd65aa5aa30d3e9d44913a48c34029d37a97
+  checksum: 10c0/8e645b0de5b3221d41411a0d07f9c020f22abe4c1f9b27e77e0b2f7be935afd76c2fc238400edba7c95aa17c597120bc3cff8c5ca6fd2719857c30a7687302a6
   languageName: node
   linkType: hard
 

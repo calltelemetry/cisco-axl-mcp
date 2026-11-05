@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.9.0...v0.10.0) (2026-11-05)
+
+
+### Features
+
+* Universal fetch handler, Streamable HTTP (2026-07-28), and modular exports ([#226](https://github.com/calltelemetry/cisco-axl-mcp/issues/226)) ([1110306](https://github.com/calltelemetry/cisco-axl-mcp/commit/1110306f30b679002ed929ba1363b230c0f0f579))
+
+
+### Bug Fixes
+
+* **mcp:** serialize undefined AXL results ([#247](https://github.com/calltelemetry/cisco-axl-mcp/issues/247)) ([9ab5490](https://github.com/calltelemetry/cisco-axl-mcp/commit/9ab5490605b7623c832fc9abc8ad22c91d179b98))
+* Streamable HTTP SSE formatting and protocol negotiation ([#227](https://github.com/calltelemetry/cisco-axl-mcp/issues/227)) ([ad6d594](https://github.com/calltelemetry/cisco-axl-mcp/commit/ad6d594e9794c50c9895aeacba0cdcd26709f1a6))
+
 ## [0.8.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.7.0...v0.8.0) (2026-08-24)
 
 

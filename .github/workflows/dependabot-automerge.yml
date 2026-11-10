@@ -16,7 +16,7 @@ permissions: {}
 jobs:
   dependabot:
     name: Auto-merge Dependabot patch/minor PRs
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     # Verify both the triggering actor and the PR author to avoid actor spoofing.
     if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     permissions:

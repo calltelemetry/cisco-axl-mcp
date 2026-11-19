@@ -2417,6 +2417,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"httpntlm@npm:^1.8.14":
+  version: 1.8.14
+  resolution: "httpntlm@npm:1.8.14"
+  dependencies:
+    des.js: "npm:^1.0.1"
+    httpreq: "npm:>=0.4.22"
+    js-md4: "npm:^0.3.2"
+  checksum: 10c0/8094d2d4194f95a4e8af4c536272249c5f22fbe0b3cc7d658d2734f5296c3eb76730a7aee1238a754a9e54fe1161134898b9154ea0211080815ab5ccc6dcbf4b
+  languageName: node
+  linkType: hard
+
 "httpreq@npm:>=0.4.22":
   version: 1.1.1
   resolution: "httpreq@npm:1.1.1"
@@ -3844,13 +3855,13 @@ __metadata:
   linkType: hard
 
 "strong-soap@npm:^6.0.1":
-  version: 6.0.3
-  resolution: "strong-soap@npm:6.0.3"
+  version: 6.0.5
+  resolution: "strong-soap@npm:6.0.5"
   dependencies:
     "@cypress/request": "npm:^3.0.10"
     compress: "npm:^0.99.0"
     debug: "npm:^4.4.3"
-    httpntlm: "npm:^1.8.13"
+    httpntlm: "npm:^1.8.14"
     lodash: "npm:^4.18.1"
     node-rsa: "npm:^1.1.1"
     sax: "npm:^1.6.1"
@@ -3859,7 +3870,7 @@ __metadata:
     uuid: "npm:^11.1.1"
     xml-crypto: "npm:^3.2.1"
     xmlbuilder: "npm:^10.1.1"
-  checksum: 10c0/b538a74330065f422762a1dfb449237671086f4a8c8e6edd634d9c9867a6e04532c8f35d4e9c1777c4576d131669cd65aa5aa30d3e9d44913a48c34029d37a97
+  checksum: 10c0/40d24288f16c28e9ba59ac88512ad5b63610bf46a37e7c8f3510028bc909a23350e1e2a86eecfc0ca772a769b019b3046d2a77f65daf4cfb7bea46464367c265
   languageName: node
   linkType: hard
 

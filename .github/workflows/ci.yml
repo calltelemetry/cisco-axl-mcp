@@ -4,37 +4,231 @@ on:
   merge_group:
     types: [checks_requested]
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    timeout-minutes: 15
     env:
       NODE_OPTIONS: "--max-old-space-size=4096"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Provenance fast-path
+        id: provenance
+        if: github.event_name == 'push' || github.event_name == 'merge_group'
+        uses: calltelemetry/github-actions/.github/actions/pr-provenance@65ea345ead587be6f275950f3c70fb59e0269f0f # v1
+        with:
+          check_name: test
+          github_token: ${{ github.token }}
+          merge_group_global_paths: '^(\.github/workflows/|package\.json|yarn\.lock|\.yarnrc\.yml|tsconfig.*\.json|vitest\.config\.ts|vite\.config\.ts|eslint\.config\.js)'
+
+      - name: Fast provenance pass
+        if: steps.provenance.outputs.proven == 'true'
+        run: echo "Tree certified by PR test (${{ steps.provenance.outputs.reason }}); skipping duplicate execution on ${{ github.event_name }}."
+
+      - name: "Classify changed files (Tactic #126 / #132)"
+        id: diff
+        if: steps.provenance.outputs.proven != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          fast_skip=false
+          workflows_changed=false
+          release_metadata=false
+          base_commit=""
+          changed=""
+
+          if [[ "$EVENT_NAME" == "pull_request" && -n "$BASE_REF" ]]; then
+            git fetch --no-tags --depth=50 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" 2>/dev/null || true
+            base_commit="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
+            if [[ ! "$base_commit" =~ ^[0-9a-f]{40}$ ]] && git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+              base_commit="$(git rev-parse HEAD^1)"
+            fi
+            if [[ "$base_commit" =~ ^[0-9a-f]{40}$ ]]; then
+              changed="$(git diff --no-renames --name-only "$base_commit" HEAD 2>/dev/null || true)"
+            fi
+            if [[ -z "$changed" && -n "$PR_NUMBER" ]]; then
+              changed="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename, (.previous_filename // empty)' 2>/dev/null | sed '/^$/d' | sort -u || true)"
+            fi
+          elif [[ "$EVENT_NAME" == "push" ]]; then
+            if [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+              git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=50 origin "$BEFORE_SHA" 2>/dev/null || true
+              if git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+                base_commit="$BEFORE_SHA"
+                changed="$(git diff --no-renames --name-only "$base_commit" "$HEAD_SHA" 2>/dev/null || true)"
+              else
+                changed="$(gh api "repos/${REPO}/compare/${BEFORE_SHA}...${HEAD_SHA}" --jq 'if (.files | length) < 300 then (.files[] | .filename, (.previous_filename // empty)) else empty end' 2>/dev/null | sed '/^$/d' | sort -u || true)"
+              fi
+            elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              base_commit="$(git rev-parse HEAD~1)"
+              changed="$(git diff --no-renames --name-only "$base_commit" HEAD 2>/dev/null || true)"
+            fi
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            if git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+              base_commit="$(git rev-parse HEAD^1)"
+              changed="$(git diff --no-renames --name-only "$base_commit" HEAD 2>/dev/null || true)"
+            fi
+          fi
+
+          if [[ -z "$changed" ]]; then
+            echo "::notice title=Diff classifier::Changed files empty or unavailable (${EVENT_NAME}); failing open to full validation."
+          else
+            SAFE_RE='^(\.release-please-manifest\.json|CHANGELOG\.md|README\.md|docs/.*|\.github/workflows/.*)$'
+            has_manifest=false
+            has_pkg=false
+            all_safe=true
+
+            while IFS= read -r f; do
+              [[ -n "$f" ]] || continue
+              [[ "$f" == ".release-please-manifest.json" ]] && has_manifest=true
+              if [[ "$f" == "package.json" ]]; then
+                has_pkg=true
+                continue
+              fi
+              if [[ "$f" =~ ^\.github/workflows/.*\.ya?ml$ ]]; then
+                workflows_changed=true
+              fi
+              if [[ ! "$f" =~ $SAFE_RE ]]; then
+                all_safe=false
+                break
+              fi
+            done <<< "$changed"
+
+            if [[ "$all_safe" == "true" && "$has_pkg" == "true" ]]; then
+              if [[ "$has_manifest" != "true" || -z "$base_commit" ]] || ! git cat-file -e "${base_commit}^{commit}" 2>/dev/null; then
+                all_safe=false
+              else
+                pkg_diff="$(git diff -U0 "$base_commit" HEAD -- package.json 2>/dev/null || true)"
+                if [[ -z "$pkg_diff" ]]; then
+                  all_safe=false
+                else
+                  changed_lines="$(printf '%s\n' "$pkg_diff" | grep -E '^[+-]' | grep -vE '^(---|\+\+\+) ' || true)"
+                  minus_cnt="$(printf '%s\n' "$changed_lines" | grep -c '^-' || true)"
+                  plus_cnt="$(printf '%s\n' "$changed_lines" | grep -c '^\+' || true)"
+                  non_version="$(printf '%s\n' "$changed_lines" | grep -vE '^[+-][[:space:]]*"version":[[:space:]]*"[^"]+",?[[:space:]]*$' || true)"
+                  if [[ "$minus_cnt" -lt 1 || "$plus_cnt" -lt 1 || -n "$non_version" ]]; then
+                    all_safe=false
+                  else
+                    release_metadata=true
+                  fi
+                fi
+              fi
+            elif [[ "$all_safe" == "true" && "$has_manifest" == "true" ]]; then
+              release_metadata=true
+            fi
+
+            if [[ "$all_safe" == "true" ]]; then
+              fast_skip=true
+              echo "::notice title=CI fast-path::Skipping yarn install/validate/codecov (workflows_changed=${workflows_changed}, release_metadata=${release_metadata})."
+            fi
+          fi
+
+          {
+            echo "fast_skip=${fast_skip}"
+            echo "workflows_changed=${workflows_changed}"
+            echo "release_metadata=${release_metadata}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "Validate release metadata JSON (Tactic #126)"
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip == 'true' && steps.diff.outputs.release_metadata == 'true'
+        run: |
+          set -euo pipefail
+          jq empty .release-please-manifest.json package.json
+          pkg_ver="$(jq -r '.version' package.json)"
+          manifest_ver="$(jq -r '.["."]' .release-please-manifest.json)"
+          if [[ -z "$pkg_ver" || "$pkg_ver" != "$manifest_ver" ]]; then
+            echo "::error::package.json version ($pkg_ver) does not match .release-please-manifest.json ($manifest_ver)"
+            exit 1
+          fi
+          echo "Validated release-please metadata JSON (version=$pkg_ver)."
+
+      - name: "Validate workflow YAML syntax (Tactic #132)"
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip == 'true' && steps.diff.outputs.workflows_changed == 'true'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, sys, yaml
+          files = sorted(glob.glob(".github/workflows/*.yml") + glob.glob(".github/workflows/*.yaml"))
+          if not files:
+              print("No workflow YAML files found", file=sys.stderr)
+              sys.exit(1)
+          for path in files:
+              with open(path, encoding="utf-8") as fh:
+                  doc = yaml.safe_load(fh)
+              if not isinstance(doc, dict) or "jobs" not in doc:
+                  print(f"Invalid workflow structure in {path}", file=sys.stderr)
+                  sys.exit(1)
+              print(f"YAML OK: {path}")
+          PY
+          if command -v actionlint >/dev/null 2>&1; then
+            actionlint -ignore 'label "blacksmith-2vcpu-ubuntu-2404-arm" is unknown'
+          fi
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true'
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Enable Corepack
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true'
         run: corepack enable
 
+      - name: Restore Yarn Berry cache
+        id: yarn-cache
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.yarn/berry/cache
+            ~/.cache/node/corepack
+          key: yarn-berry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+          restore-keys: |
+            yarn-berry-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install dependencies
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true'
         run: yarn install --immutable
 
+      - name: Save Yarn Berry cache
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.yarn-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.yarn/berry/cache
+            ~/.cache/node/corepack
+          key: yarn-berry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+
       - name: Validate
+        id: validate
+        if: steps.provenance.outputs.proven != 'true' && steps.diff.outputs.fast_skip != 'true'
         run: yarn validate
 
       - name: Upload coverage to Codecov
-        if: always()
+        if: ${{ !cancelled() && (steps.validate.outcome == 'success' || steps.validate.outcome == 'failure') }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

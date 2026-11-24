@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   audit:
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    # Blacksmith flex on the schedule arm only (may start up to 24h late, -40%); dispatch stays on demand.
+    runs-on: ${{ github.event_name == 'schedule' && 'blacksmith-2vcpu-ubuntu-2404-arm;scheduling=flex' || 'blacksmith-2vcpu-ubuntu-2404-arm' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

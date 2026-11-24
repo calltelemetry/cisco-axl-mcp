@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.10.0...v0.10.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **deps:** clear weekly npm audit findings (no-linear) ([#249](https://github.com/calltelemetry/cisco-axl-mcp/issues/249)) ([b7a5a6d](https://github.com/calltelemetry/cisco-axl-mcp/commit/b7a5a6d2b62f8f5aa0f10bbeb5d942ba6b143afd))
+
 ## [0.10.0](https://github.com/calltelemetry/cisco-axl-mcp/compare/v0.9.0...v0.10.0) (2026-11-05)
 
 

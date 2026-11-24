@@ -29,14 +29,133 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      # Inline Tactic #146 provenance gate: cisco-axl-mcp is a public repository and cannot
+      # reference private calltelemetry/github-actions composite actions.
       - name: Provenance fast-path
         id: provenance
         if: github.event_name == 'push' || github.event_name == 'merge_group'
-        uses: calltelemetry/github-actions/.github/actions/pr-provenance@65ea345ead587be6f275950f3c70fb59e0269f0f # v1
-        with:
-          check_name: test
-          github_token: ${{ github.token }}
-          merge_group_global_paths: '^(\.github/workflows/|package\.json|yarn\.lock|\.yarnrc\.yml|tsconfig.*\.json|vitest\.config\.ts|vite\.config\.ts|eslint\.config\.js)'
+        env:
+          CHECK_NAME: test
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          MG_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_PATHS: '^(\.github/workflows/|package\.json|yarn\.lock|\.yarnrc\.yml|tsconfig.*\.json|vitest\.config\.ts|vite\.config\.ts|eslint\.config\.js)'
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          head_tree="$(git rev-parse 'HEAD^{tree}')"
+          proven=false
+          reason=unproven
+
+          has_green() {
+            [[ -n "${1:-}" ]] || return 1
+            local api_out
+            if ! api_out="$(gh api "repos/${REPO}/commits/${1}/check-runs?per_page=100" \
+              --jq "[.check_runs[] | select(.name == \"${CHECK_NAME}\" and .status == \"completed\" and .conclusion == \"success\")] | length > 0" 2>&1)"; then
+              echo "::warning title=PR provenance::check-runs lookup failed for ${1:0:7}: ${api_out}" >&2
+              return 1
+            fi
+            [[ "$api_out" == "true" ]]
+          }
+
+          if [[ "$EVENT_NAME" == "merge_group" ]]; then
+            queue_base="$(git rev-parse --verify HEAD^1 2>/dev/null || true)"
+            pr_head="$(git rev-parse --verify HEAD^2 2>/dev/null || true)"
+            if [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]; then
+              pr_tree="$(git rev-parse --verify "${pr_head}^{tree}" 2>/dev/null || true)"
+              mode=""
+              if [[ "$head_tree" == "$pr_tree" ]]; then
+                mode="exact"
+              elif [[ "$queue_base" =~ ^[0-9a-f]{40}$ ]]; then
+                pr_base="$(git merge-base "$queue_base" "$pr_head" 2>/dev/null || true)"
+                if [[ -z "$pr_base" ]]; then
+                  git fetch --no-tags --filter=blob:none --deepen=2000 origin >/dev/null 2>&1 || true
+                  pr_base="$(git merge-base "$queue_base" "$pr_head" 2>/dev/null || true)"
+                fi
+                if [[ "$pr_base" =~ ^[0-9a-f]{40}$ ]]; then
+                  drift="$(git diff --no-renames --name-only "$pr_base" "$queue_base" 2>/dev/null || true)"
+                  pr_changed="$(git diff --no-renames --name-only "$pr_base" "$pr_head" 2>/dev/null || true)"
+                  if [[ -z "$drift" ]]; then
+                    mode="disjoint-base-drift"
+                  elif ! printf '%s\n' "$drift" | grep -qE "${MERGE_GROUP_PATHS}"; then
+                    overlap="$(comm -12 <(printf '%s\n' "$drift" | LC_ALL=C sort -u) <(printf '%s\n' "$pr_changed" | LC_ALL=C sort -u))"
+                    [[ -z "$overlap" ]] && mode="disjoint-base-drift"
+                  fi
+                fi
+              fi
+              if [[ -n "$mode" ]] && has_green "$pr_head"; then
+                proven=true
+                reason="merge-group-${mode}:${pr_head:0:7}"
+              fi
+            elif [[ "${MG_HEAD_REF:-}" =~ ^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)- ]]; then
+              pr_num="${BASH_REMATCH[1]}"
+              squash_fail=""
+              pr_json="$(gh api "repos/${REPO}/pulls/${pr_num}" 2>/dev/null || true)"
+              if [[ -z "$pr_json" ]]; then
+                squash_fail="PR #${pr_num} lookup failed"
+              else
+                pr_meta="$(jq -r '[if .draft == false then "false" elif .draft == true then "true" else "invalid" end, (.head.sha // ""), (.base.sha // "")] | @tsv' <<<"$pr_json" 2>/dev/null || true)"
+                pr_draft="" pr_head="" pr_base=""
+                IFS=$'\t' read -r pr_draft pr_head pr_base <<<"$pr_meta"
+                if [[ "$pr_draft" != "false" ]]; then
+                  squash_fail="PR #${pr_num} draft state invalid (${pr_draft:-empty})"
+                elif [[ ! "$pr_head" =~ ^[0-9a-f]{40}$ || ! "$pr_base" =~ ^[0-9a-f]{40}$ ]]; then
+                  squash_fail="PR #${pr_num} invalid head/base SHA"
+                elif ! has_green "$pr_head"; then
+                  squash_fail="PR #${pr_num} (${pr_head:0:7}) lacks green ${CHECK_NAME}"
+                elif [[ ! "$queue_base" =~ ^[0-9a-f]{40}$ ]]; then
+                  squash_fail="missing valid HEAD^1 queue_base"
+                fi
+              fi
+
+              if [[ -z "$squash_fail" ]]; then
+                pr_files="$(gh api "repos/${REPO}/pulls/${pr_num}/files" --paginate --jq '.[] | "\(.filename // "")\t\(.status // "")\t\(.sha // "")"' 2>/dev/null | sed '/^$/d' | LC_ALL=C sort || true)"
+                mg_cmp="$(gh api "repos/${REPO}/compare/${queue_base}...${head_sha}" 2>/dev/null || true)"
+                mg_files="$(jq -r 'if (.files | type) == "array" and (.files | length) > 0 and (.files | length) < 300 then (.files[] | "\(.filename // "")\t\(.status // "")\t\(.sha // "")") else empty end' <<<"$mg_cmp" 2>/dev/null | sed '/^$/d' | LC_ALL=C sort || true)"
+                if [[ -z "$pr_files" || -z "$mg_files" || "$pr_files" != "$mg_files" ]]; then
+                  squash_fail="file-blob identity mismatch"
+                elif [[ "$pr_base" == "$queue_base" ]]; then
+                  proven=true
+                  reason="merge-group-exact:${pr_head:0:7}"
+                else
+                  base_cmp="$(gh api "repos/${REPO}/compare/${pr_base}...${queue_base}" 2>/dev/null || true)"
+                  base_status="$(jq -r '.status // ""' <<<"$base_cmp" 2>/dev/null || true)"
+                  base_count="$(jq -r 'if .files == null then 0 elif (.files | type) == "array" then (.files | length) else 300 end' <<<"$base_cmp" 2>/dev/null || echo 300)"
+                  if [[ "$base_status" == "ahead" || "$base_status" == "identical" ]] && [[ "$base_count" -lt 300 ]]; then
+                    drift="$(jq -r '.files[]? | .filename, (.previous_filename // empty)' <<<"$base_cmp" 2>/dev/null | sed '/^$/d' | LC_ALL=C sort -u || true)"
+                    pr_changed="$(printf '%s\n' "$pr_files" | cut -f1 | LC_ALL=C sort -u)"
+                    if [[ -z "$drift" ]] || { ! printf '%s\n' "$drift" | grep -qE "${MERGE_GROUP_PATHS}" && [[ -z "$(comm -12 <(printf '%s\n' "$drift") <(printf '%s\n' "$pr_changed"))" ]]; }; then
+                      proven=true
+                      reason="merge-group-disjoint-base-drift:${pr_head:0:7}"
+                    else
+                      squash_fail="base drift hits global paths or overlaps PR"
+                    fi
+                  else
+                    squash_fail="base compare invalid (${base_status:-empty}, files=${base_count})"
+                  fi
+                fi
+              fi
+              if [[ -n "$squash_fail" ]]; then
+                echo "::notice title=PR provenance::squash merge_group fail-closed (${squash_fail})." >&2
+              fi
+            fi
+          fi
+
+          if [[ "$proven" == "false" ]]; then
+            pr_heads="$(gh api "repos/${REPO}/commits/${head_sha}/pulls" --jq '.[].head.sha' 2>/dev/null || true)"
+            for cand in $(git rev-parse HEAD HEAD^2 2>/dev/null || git rev-parse HEAD) ${pr_heads}; do
+              ct="$(git rev-parse --verify "${cand}^{tree}" 2>/dev/null || gh api "repos/${REPO}/git/commits/${cand}" --jq '.tree.sha' 2>/dev/null || true)"
+              if [[ -n "$ct" && "$ct" == "$head_tree" ]] && has_green "$cand"; then
+                proven=true
+                reason="tree-certified:${cand:0:7}"
+                break
+              fi
+            done
+          fi
+
+          echo "proven=${proven}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
 
       - name: Fast provenance pass
         if: steps.provenance.outputs.proven == 'true'
